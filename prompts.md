@@ -71,3 +71,45 @@ Tài liệu này ghi lại theo đúng thứ tự các prompt đã sử dụng v
 - **Lỗi AI đã phát hiện và cách xử lý:**
   - *Kết quả kiểm thử thực tế Giai đoạn 2:* Không phát sinh lỗi SQL khi chạy tuần tự `schema.sql` → `mo_rong.sql` → `seed.sql` bằng tài khoản `rikkei_dev` trên MySQL `8.0.44`. Đã xác minh 14 thiết bị, 17 phiếu mượn, 4 bản ghi phạt, 5 kiểm tra bất thường (= 0), 12 test vi phạm ràng buộc bị chặn (`UNIQUE`, `CHECK`, `FOREIGN KEY ON DELETE RESTRICT`) và 1 test transaction rollback xóa thiết bị chưa phát sinh phiếu đều hoạt động chính xác.
   - *Lưu ý phòng ngừa lỗi đã áp dụng sẵn:* Đặt `INDEX idx_borrowings_equipment_returned` và `idx_fines_status` trực tiếp trong `CREATE TABLE IF NOT EXISTS` thay vì dùng `CREATE INDEX` rời (do MySQL 8 không hỗ trợ `CREATE INDEX IF NOT EXISTS`); dùng `LAST_INSERT_ID()` và truy vấn `SELECT id FROM equipments WHERE code = ...` trong `seed.sql` để không phụ thuộc ID tự tăng cố định.
+
+---
+
+## Prompt 6 – Giai đoạn 3 (Backend Phần 1): Nền tảng Backend, Connection Pool UTC+7 và `/api/health`
+
+- **Nhiệm vụ:** Đọc lại tài liệu, kiểm tra Git Commit #2 (`dd969b1`), khởi tạo nền tảng Backend theo stack khóa cứng (Express 4, CommonJS, `mysql2/promise` pool, `zod`, `dotenv`, `cors`, `node --watch`), kiểm tra xác thực biến môi trường bằng Zod không lộ `DB_PASSWORD`, bảo đảm mọi kết nối mới trong Pool có MySQL session `time_zone = '+07:00'`, xây dựng helper ngày Việt Nam, middleware lỗi tập trung và endpoint `GET /api/health`. Chưa triển khai các API nghiệp vụ thiết bị/phiếu mượn/tiền phạt trong bước này.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (cập nhật Prompt 6 và kết quả kiểm thử thực tế)
+  - `backend/package.json`, `backend/.env.example`
+  - `backend/src/config/env.js`, `backend/src/config/db.js`
+  - `backend/src/utils/AppError.js`, `backend/src/utils/date.js`
+  - `backend/src/middlewares/notFound.js`, `backend/src/middlewares/errorHandler.js`
+  - `backend/src/services/health.service.js`, `backend/src/controllers/health.controller.js`, `backend/src/routes/health.routes.js`, `backend/src/routes/index.js`
+  - `backend/src/app.js`, `backend/src/server.js`
+- **Kết quả mong đợi:**
+  - Cài đặt đúng Express 4 (`express@4`), `mysql2`, `zod`, `dotenv`, `cors`.
+  - Xác thực `.env` bằng Zod chạy đúng (bắt lỗi khi thiếu biến môi trường, không lộ `DB_PASSWORD`).
+  - Pool kết nối bằng tài khoản `rikkei_dev`; mọi connection lấy từ Pool trả về `@@session.time_zone = '+07:00'`.
+  - `GET /api/health` trả HTTP `200` khi DB kết nối bình thường và HTTP `503` (đúng cấu trúc `{ error: { code, message } }`) khi DB lỗi, không lộ thông tin nhạy cảm; các route lạ trả `404`.
+  - `.gitignore` tiếp tục chặn `backend/.env` và `backend/node_modules/`.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - *Lỗi 1 (Zod v4 breaking change ở `backend/src/config/env.js`):* Khi test truyền `DB_PORT=abc`, Zod v4 (`4.6.7`) không đọc tùy chọn `invalid_type_error` và `required_error` (cú pháp cũ của Zod v3), khiến thông báo lỗi in ra tiếng Anh (`Invalid input: expected number, received NaN`) thay vì tiếng Việt có dấu. Đã sửa sang cú pháp Zod v4 (`{ error: '...' }`) và test lại: thông báo trả về đúng tiếng Việt (`DB_PORT: DB_PORT phải là số nguyên hợp lệ.`).
+  - *Lỗi 2 (`dotenv` v18 in log mặc định):* `dotenv@18.0.10` tự in dòng `◇ injected env (7) from ...` làm nhiễu log chuẩn. Đã bổ sung tùy chọn `quiet: true` trong `dotenv.config(...)` ở `env.js` và kiểm tra lại không còn log thừa.
+  - *Lưu ý kiểm tra `npm run dev`:* Khi test spawn `npm run dev` trong script PowerShell, lệnh `taskkill` chạy bất đồng bộ làm tác vụ nền chưa thoát ngay cho đến khi hủy task test; đã kiểm tra lại bằng `Get-NetTCPConnection` xác nhận cổng `5000` đã được giải phóng sạch sẽ.
+  - *Kết quả kiểm thử thực tế đã xác minh:* Kiểm tra cú pháp toàn bộ 12 file `.js`, test Pool 4 kết nối đồng thời đều có `@@session.time_zone = '+07:00'` dưới user `rikkei_dev@127.0.0.1`, test `date.js` (`getTodayVN`, `isValidIsoDate`, `diffDays`), test `GET /api/health` (200 OK & CORS header & 503 khi DB tắt cổng `3399`), test `404 NOT_FOUND`, test `400 INVALID_JSON`, và test khởi động `npm run dev`.
+
+---
+
+## Prompt 7 – Rà soát nền tảng Backend và tạo Commit #3
+
+- **Nhiệm vụ:** Đọc lại toàn bộ 14 file nền tảng Backend và `prompts.md`, kiểm tra bảo mật `.env`/`.gitignore`, CommonJS, thứ tự sự kiện `connection` trên Pool, cách xử lý khi thiết lập `SET time_zone = '+07:00'` thất bại, sau đó tạo Commit #3 (`feat(backend): khởi tạo nền tảng Express và MySQL pool`) và dừng lại chờ duyệt bước triển khai API nghiệp vụ.
+- **Phạm vi file:**
+  - `backend/package.json`, `backend/package-lock.json`, `backend/.env.example`
+  - Toàn bộ `backend/src/` (12 file JS)
+  - `prompts.md`
+- **Kết quả mong đợi:**
+  - Nếu thiết lập `SET time_zone = '+07:00'` thất bại trên một kết nối mới trong Pool, kết nối đó phải bị hủy thay vì âm thầm chạy truy vấn với múi giờ `SYSTEM`.
+  - Commit #3 sạch sẽ, không dính `backend/.env` hay `backend/node_modules/`.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - *Phát hiện khi rà soát `backend/src/config/db.js`:* Ở phiên bản đầu, callback của `connection.query("SET time_zone = '+07:00'")` trong `pool.on('connection')` mới chỉ ghi `console.error(...)` mà chưa hủy kết nối lỗi, dẫn đến nguy cơ kết nối sai múi giờ vẫn được trả cho truy vấn nghiệp vụ nếu câu `SET time_zone` thất bại.
+  - *Cách xử lý:* Bổ sung `connection.destroy()` trong nhánh lỗi của `pool.on('connection')` để loại bỏ kết nối khỏi Pool và đóng socket ngay (`_allConnections` về `0` khi test mô phỏng `SET time_zone = 'INVALID/ZONE'` thất bại với `ER_UNKNOWN_TIME_ZONE`).
+  - *Kết quả kiểm thử lại sau chỉnh sửa `db.js`:* `node -c db.js` đạt; Pool thật trả về `sessionTz: '+07:00'` và `GET /api/health` trả `200`; Pool mô phỏng lỗi timezone hủy kết nối sạch (`BAD_POOL_ALL_CONNS_AFTER: 0`) và từ chối truy vấn thay vì chạy sai múi giờ.

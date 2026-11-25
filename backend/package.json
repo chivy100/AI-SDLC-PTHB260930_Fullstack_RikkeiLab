@@ -1,0 +1,17 @@
+{
+  "name": "rikkei-lab-backend",
+  "version": "1.0.0",
+  "description": "Backend API cho he thong quan ly muon tra thiet bi phong thuc hanh Rikkei Lab",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^4.22.3",
+    "mysql2": "^3.24.6",
+    "zod": "^4.6.7"
+  }
+}
