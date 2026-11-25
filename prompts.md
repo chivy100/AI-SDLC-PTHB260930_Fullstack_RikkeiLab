@@ -207,3 +207,65 @@ Tài liệu này ghi lại theo đúng thứ tự các prompt đã sử dụng v
   - `prompts.md`
 - **Kết quả kiểm tra & Lỗi phát hiện:**
   - Đọc trực tiếp toàn bộ 10 file: không có code thừa/monkey patch kiểm thử, không lộ secret, `node -c` đạt toàn bộ file JS, `git diff --check` sạch, `backend/.env` và `backend/node_modules/` tiếp tục bị `.gitignore` chặn. Không có chỉnh sửa thêm vào code nên không cần chạy lại suite kiểm thử đã pass ở Prompt 10.
+
+---
+
+## Prompt 12 – Giai đoạn 5 (Bước 5.1): Phân tích đề bài, HTML mẫu, API Backend và thiết kế Frontend
+
+- **Nhiệm vụ:** Đọc lại đề bài gốc, toàn bộ các tệp trong `giao_dien_mau/`, `README.md`, `prompts.md` và mã nguồn API thực tế trong `backend/src/`. Lập bản phân tích đối chiếu đầy đủ 10 nội dung cho Frontend (danh sách màn hình, đối chiếu API request/response thực tế, luồng dữ liệu React → Axios → Express → MySQL, cấu trúc thư mục, component dùng chung, lộ trình chia bước nhỏ và các điểm nguy cơ sai lệch). Chưa tạo file source code Frontend, chưa chạy Vite, chưa cài package, chưa sửa Backend và chưa tạo Commit #6.
+- **Phạm vi file:** Chỉ cập nhật nhật ký Prompt 12 vào `prompts.md`; không tạo hay sửa file mã nguồn nào khác.
+- **Kết quả mong đợi:** Xác định chính xác hợp đồng JSON thực tế từ Backend (`equipment`, `borrowing`, `fine`), ánh xạ chính xác các thành phần từ `index.html`, `phieu-muon.html` và `mo_rong/a-tien-phat.html` sang React + Bootstrap 5.3.3 CDN, phòng ngừa các lỗi phổ biến (ép kiểu số cho Zod, `limit=100` cho dropdown chọn thiết bị ở `BorrowForm`, khác biệt tên trường giữa `/api/borrowings` và `/api/fines`, lệch múi giờ ngày và race condition khi search).
+- **Lỗi / Điểm phát hiện trong bước phân tích:**
+  - *Phát hiện 1 (Dropdown chọn thiết bị ở `BorrowForm`):* API `GET /api/equipments` phân trang mặc định `limit = 8`; nếu `BorrowForm` dùng chung dữ liệu trang hiện tại thì các thiết bị từ trang 2 trở đi (`LAB-009`..`LAB-014`) sẽ bị thiếu khi lập phiếu mượn. Đề xuất gọi riêng `limit = 100` cho select chọn thiết bị.
+  - *Phát hiện 2 (Ép kiểu số nguyên cho Zod strict):* Backend dùng `z.number().int()` nên `<input type="number">` của React cần chuyển sang `Number(...)` trước khi gửi thay vì gửi chuỗi.
+  - *Phát hiện 3 (Khác biệt tên trường giữa 2 API):* `/api/borrowings` dùng `id`, `code`, `finePaidAt`, còn `/api/fines` dùng `borrowingId`, `borrowingCode`, `paidAt`; đã ghi nhận chính xác vào bảng ánh xạ trước khi viết service/component Frontend.
+
+---
+
+## Prompt 13 – Giai đoạn 5 (Bước 5.2): Khởi tạo dự án Vite + React 18 và xây dựng Layout nền tảng Frontend
+
+- **Nhiệm vụ:** Kiểm tra môi trường Node/npm và `.gitignore`; khởi tạo dự án Frontend thuần JavaScript tại `frontend/` với React `18.3.1`, React DOM `18.3.1`, Vite (tương thích Node 24), `@vitejs/plugin-react` và Axios; nhúng Bootstrap 5.3.3 CSS CDN (không cài Bootstrap npm, không Bootstrap JS bundle, không TypeScript/Tailwind/Router); cấu hình `frontend/.env` và `frontend/.env.example` (`VITE_API_BASE_URL=http://localhost:5000/api`); tạo Axios instance (`axiosClient.js`), `healthService.js`, `utils/` và bộ Layout nền tảng (`AppShell`, `AppNavbar`, `BackendStatus`, `LoadingState`, `EmptyState`, `StatusAlert`) với 3 màn hình placeholder. Kiểm thử thực tế trên trình duyệt, `npm run build` và `.gitignore`. Chưa tạo các màn hình CRUD/nghiệp vụ và chưa tạo Commit #6.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (cập nhật Prompt 13 và kết quả kiểm thử thực tế)
+  - `frontend/package.json`, `frontend/package-lock.json`, `frontend/vite.config.js`, `frontend/index.html`
+  - `frontend/.env` (ignored), `frontend/.env.example`
+  - `frontend/src/main.jsx`, `frontend/src/App.jsx`, `frontend/src/styles/custom.css`
+  - `frontend/src/utils/format.js`, `frontend/src/utils/error.js`
+  - `frontend/src/services/axiosClient.js`, `frontend/src/services/healthService.js`
+  - `frontend/src/components/common/AppNavbar.jsx`, `AppShell.jsx`, `BackendStatus.jsx`, `LoadingState.jsx`, `EmptyState.jsx`, `StatusAlert.jsx`
+- **Kết quả mong đợi:**
+  - `npm ls react react-dom vite axios` xác nhận `react@18.3.1`, `react-dom@18.3.1`, không cài nhầm React 19.
+  - `git check-ignore -v` xác nhận `frontend/.env`, `frontend/node_modules/`, `frontend/dist/` bị chặn và `frontend/.env.example` được theo dõi.
+  - Vite chạy tại `http://localhost:5173`, Bootstrap 5.3.3 CSS CDN hoạt động tốt trên desktop & mobile, điều hướng 3 tab mượt mà bằng React state, `BackendStatus` kết nối thật `GET /api/health` (hiển thị cả trạng thái kết nối thành công và cảnh báo khi Backend/DB tắt), `npm run build` thành công không lỗi.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - *Cảnh báo khi `npm install` trên `esbuild`:* npm cảnh báo `allow-scripts` cho `esbuild@0.25.12`; đã kiểm tra thực tế bằng `npm run build` (`vite build` hoàn thành trong `2.33s` ra `dist/`) và chạy thử `npm run dev` phục vụ `http://localhost:5173/` bình thường.
+  - *Giới hạn kiểm thử trình duyệt (trung thực trạng thái):* Khi gọi subagent `browser` để kiểm tra giao diện Chrome tại `http://localhost:5173/`, `chrome_devtools` báo lỗi `Could not find DevToolsActivePort ... (ENOENT)` do Google Chrome chưa bật remote debugging (`chrome://inspect/#remote-debugging`). Vì vậy các điểm **hiển thị trực quan trên trình duyệt Chrome và thao tác click UI/responsive thực tế trên DOM** được ghi nhận là **chưa kiểm chứng tự động qua Chrome**.
+  - *Kết quả kiểm thử thực tế đã xác minh ở Bước 5.2:*
+    - `node -v` = `v24.18.0`, `npm -v` = `11.16.0`.
+    - `npm ls react react-dom vite axios @vitejs/plugin-react` xác nhận đúng `react@18.3.1`, `react-dom@18.3.1`, `vite@6.4.6`, `@vitejs/plugin-react@4.7.0`, `axios@1.21.1` (không cài nhầm React 19 hay Bootstrap npm).
+    - `npm run build` thành công (`91 modules transformed`, tạo `dist/` sạch).
+    - Vite dev server phản hồi `200` trên `http://localhost:5173/`, `index.html` có link CSS `bootstrap@5.3.3` CDN, `/src/App.jsx` biên dịch `200`.
+    - Test `axios` + `normalizeApiError`: gọi `GET /api/health` (`200 { status: 'ok', database: 'connected' }` với CORS origin `http://localhost:5173`) và mô phỏng Backend tắt (port `5999`) trả về `NETWORK_ERROR` kèm thông báo tiếng Việt.
+    - Test `format.js`: `formatDateVN`, `formatCurrencyVND`, `getTodayVN`, `addDaysIso` chính xác.
+    - `git check-ignore -v` xác nhận `frontend/.env`, `frontend/node_modules/`, `frontend/dist/` bị chặn và `frontend/.env.example` được theo dõi.
+
+---
+
+## Prompt 14 – Giai đoạn 5 (Bước 5.3): Triển khai màn hình Quản lý thiết bị
+
+- **Nhiệm vụ:** Đọc đối chiếu `giao_dien_mau/index.html`, mục 4.3 của đề bài và API `/api/equipments` thực tế. Triển khai màn hình Quản lý thiết bị (`EquipmentPage`) gồm: danh sách thiết bị, tìm kiếm có debounce + `AbortController`, lọc theo 4 loại ENUM, phân trang `limit = 8` (tự về trang 1 khi đổi bộ lọc, tự lùi trang khi xóa bản ghi cuối ở trang `> 1`), modal Xem chi tiết (`GET /api/equipments/:id`), modal Thêm/Sửa (validate client + ép `Number`, hiển thị lỗi Backend 409 tại form, khóa nút chống bấm đúp), modal Xác nhận xóa (hiển thị lỗi `409 EQUIPMENT_HAS_BORROWINGS` ngay trong modal) và đủ các trạng thái Loading, Empty, Empty search, Error, Success. Không sửa Backend/Database, không triển khai Phiếu mượn/Tiền phạt và chưa tạo Commit #6.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (cập nhật Prompt 14 và kết quả kiểm thử thực tế)
+  - `frontend/src/utils/format.js` (bổ sung `CATEGORY_OPTIONS`)
+  - `frontend/src/services/equipmentService.js`
+  - `frontend/src/hooks/useEquipments.js`
+  - `frontend/src/components/common/Pagination.jsx`
+  - `frontend/src/components/equipments/EquipmentToolbar.jsx`, `EquipmentTable.jsx`, `EquipmentDetailModal.jsx`, `EquipmentFormModal.jsx`, `ConfirmDeleteModal.jsx`
+  - `frontend/src/pages/EquipmentPage.jsx`
+  - `frontend/src/App.jsx` (nối `EquipmentPage` vào tab `equipments`)
+- **Kết quả thực tế đã kiểm chứng:**
+  - `node -c` đạt 7/7 file `.js` (`vite.config.js`, `src/utils/*.js`, `src/services/*.js`, `src/hooks/useEquipments.js`); `npm run build` thành công (`vite v6.4.6`, `104 modules transformed`, tạo `dist/index.html` và bundle JS/CSS trong `2.91s`).
+  - Kiểm thử tích hợp trực tiếp giữa Vite (`http://localhost:5173`), Backend (`http://localhost:5000/api`) và MySQL (`rikkei_lab`) đạt toàn bộ 18 kịch bản CRUD, tìm kiếm (gồm escape ký tự `%`), lọc 4 loại ENUM, phân trang (lùi trang khi xóa phần tử cuối của trang cuối), xử lý lỗi `400`/`409`/`NETWORK_ERROR`, hủy request qua `AbortController` và tranh chấp đồng thời (double POST/DELETE).
+  - Sau kiểm thử đã dọn sạch dữ liệu tạm trên MySQL về nguyên trạng ban đầu (`14` thiết bị, `17` phiếu mượn, `4` khoản phạt).
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - Khi chạy `browser` subagent kiểm thử trực quan trên Chrome (`http://localhost:5173/`), Chrome DevTools MCP báo lỗi `ENOENT` tại `DevToolsActivePort` do chưa bật Remote Debugging; kết quả MCP ban đầu được ghi nhận trung thực là chưa xác minh tự động, sau đó người dùng đã mở Chrome kiểm tra trực tiếp toàn bộ giao diện, modal, tương tác và responsive đạt yêu cầu trước khi phê duyệt Commit #6.
