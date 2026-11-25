@@ -290,3 +290,22 @@ Tài liệu này ghi lại theo đúng thứ tự các prompt đã sử dụng v
   - Sau kiểm thử đã dọn sạch dữ liệu tạm theo thứ tự Foreign Key (`fines` → `borrowings` → `equipments`) và đối chiếu MySQL còn nguyên `14` thiết bị, `17` phiếu mượn, `4` khoản phạt, `0` bản ghi `TEST-*`.
 - **Lỗi AI đã phát hiện và cách xử lý:**
   - Khi gọi subagent `browser` kiểm tra Chrome (`http://localhost:5173/`), Chrome DevTools MCP báo `ENOENT` tại `DevToolsActivePort` do chưa bật Remote Debugging; phần kiểm tra tự động qua MCP được ghi nhận trung thực là chưa xác minh, sau đó giữ nguyên Backend (`http://localhost:5000`) và Vite (`http://localhost:5173`) hoạt động để người dùng mở Chrome kiểm tra trực tiếp toàn bộ form, dropdown hết hàng, 4 bộ lọc, bảng và 2 modal trả thiết bị đạt yêu cầu trước khi phê duyệt Commit #7.
+
+---
+
+## Prompt 16 – Giai đoạn 5 (Bước 5.5): Triển khai màn hình Quá hạn và tiền phạt
+
+- **Nhiệm vụ:** Đọc đối chiếu `giao_dien_mau/mo_rong/a-tien-phat.html`, đề bài hướng A, `prompts.md` và mã nguồn API Backend (`fine.service.js`, `fine.repository.js`, `fine.validator.js`). Triển khai màn hình Quá hạn và tiền phạt (`FinePage`) gồm: `FineSummary` (3 thẻ: Tiền phạt đã thu, Tiền phạt đang nợ tách rõ Đã chốt chưa thu & Tạm tính chưa trả, Mức phạt cố định `5.000 đ / thiết bị / ngày`), `FineTable` (phân biệt tuyệt đối 3 nhóm theo `fineStatus`: `provisional`, `unpaid`, `paid` với thao tác tương ứng), tái sử dụng `components/common/ReturnWithFineModal.jsx` cho nhóm `provisional`, và `ConfirmPayFineModal.jsx` gọi `PATCH /api/fines/:id/pay` với body `{}` (xử lý `409 FINE_ALREADY_PAID`, không optimistic update). Không sửa Backend/Database, chưa tạo Commit #8.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (ghi Prompt 16 và cập nhật kết quả kiểm thử thực tế + hồi quy toàn Frontend)
+  - `frontend/src/services/fineService.js`
+  - `frontend/src/hooks/useFines.js`
+  - `frontend/src/components/fines/FineSummary.jsx`, `FineTable.jsx`, `ConfirmPayFineModal.jsx`
+  - `frontend/src/pages/FinePage.jsx`
+  - `frontend/src/App.jsx` (tích hợp `FinePage` vào tab `fines`)
+- **Kết quả thực tế đã kiểm chứng:**
+  - `node -c` đạt 11/11 file `.js` (`vite.config.js`, `src/utils/*.js`, `src/services/*.js`, `src/hooks/*.js`); `npm run build` thành công (`vite v6.4.6`, `118 modules transformed`, tạo `dist/` trong `3.28s`).
+  - Kiểm thử tích hợp thật Bước 5.5 (`http://localhost:5173` ↔ `http://localhost:5000/api` ↔ MySQL `rikkei_lab`) đạt toàn bộ: `GET /api/fines` khớp dữ liệu seed (`collectedAmount = 80000`, `unpaidSettledAmount = 55000`, `provisionalAmount = 145000`, `totalOwedAmount = 200000`, `7` dòng gồm `2 unpaid`, `3 provisional`, `2 paid`), kiểm tra bất biến trường `null`/trạng thái ở cả 3 nhóm, chuyển `provisional → unpaid` bảo toàn đúng `totalOwedAmount = 240000` không cộng trùng, thu tiền `unpaid → paid` với body `{}` tăng `collectedAmount` một lần (`80000 → 120000`), xử lý `404`/`409 FINE_ALREADY_PAID`/`400 VALIDATION_ERROR`/tranh chấp đồng thời double-pay/hủy request `AbortController`/`NETWORK_ERROR`, và kiểm thử hồi quy màn hình Thiết bị, Phiếu mượn và `/api/health`.
+  - Dọn sạch dữ liệu test theo thứ tự Foreign Key (`fines` → `borrowings` → `equipments`) và đối chiếu MySQL giữ nguyên `14` thiết bị, `17` phiếu mượn, `4` khoản phạt, `0` bản ghi `TEST-*`.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - Khi gọi subagent `browser` đọc kiểm tra Chrome (`http://localhost:5173/`), Chrome DevTools MCP báo `ENOENT` tại `DevToolsActivePort` do chưa bật Remote Debugging; phần kiểm tra tự động qua MCP được ghi nhận trung thực là chưa xác minh, sau đó giữ nguyên Backend (`http://localhost:5000`) và Vite (`http://localhost:5173`) hoạt động để người dùng kiểm tra trực tiếp tab Quá hạn & tiền phạt trên Chrome và xác nhận đạt yêu cầu trước khi phê duyệt Commit #8.
