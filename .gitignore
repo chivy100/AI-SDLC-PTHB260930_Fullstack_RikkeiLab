@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Environment variables (không đưa .env thật lên GitHub, giữ lại .env.example)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# Build & Vite cache
+dist/
+frontend/dist/
+.vite/
+frontend/.vite/
+
+# Logs & IDE / OS files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
