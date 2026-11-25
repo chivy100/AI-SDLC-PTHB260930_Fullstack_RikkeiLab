@@ -113,3 +113,48 @@ Tài liệu này ghi lại theo đúng thứ tự các prompt đã sử dụng v
   - *Phát hiện khi rà soát `backend/src/config/db.js`:* Ở phiên bản đầu, callback của `connection.query("SET time_zone = '+07:00'")` trong `pool.on('connection')` mới chỉ ghi `console.error(...)` mà chưa hủy kết nối lỗi, dẫn đến nguy cơ kết nối sai múi giờ vẫn được trả cho truy vấn nghiệp vụ nếu câu `SET time_zone` thất bại.
   - *Cách xử lý:* Bổ sung `connection.destroy()` trong nhánh lỗi của `pool.on('connection')` để loại bỏ kết nối khỏi Pool và đóng socket ngay (`_allConnections` về `0` khi test mô phỏng `SET time_zone = 'INVALID/ZONE'` thất bại với `ER_UNKNOWN_TIME_ZONE`).
   - *Kết quả kiểm thử lại sau chỉnh sửa `db.js`:* `node -c db.js` đạt; Pool thật trả về `sessionTz: '+07:00'` và `GET /api/health` trả `200`; Pool mô phỏng lỗi timezone hủy kết nối sạch (`BAD_POOL_ALL_CONNS_AFTER: 0`) và từ chối truy vấn thay vì chạy sai múi giờ.
+
+---
+
+## Prompt 8 – Giai đoạn 3 (Backend Phần 1): API Nghiệp vụ Thiết bị (`/api/equipments`) và Mượn trả (`/api/borrowings`)
+
+- **Nhiệm vụ:** Đọc đối chiếu lại đề bài, cấu trúc DB (`schema.sql`, `mo_rong.sql`, `seed.sql`), nền tảng Backend hiện tại và Commit #3 (`afc7550`). Triển khai đầy đủ API quản lý thiết bị (`/api/equipments`) và phiếu mượn/trả (`/api/borrowings`) theo kiến trúc Routes → Controllers → Services → Repositories → MySQL; dùng Zod kiểm tra input; bảo đảm Transaction + `SELECT ... FOR UPDATE` chống race condition khi tạo phiếu mượn, cập nhật tổng số lượng và xóa thiết bị; chưa triển khai phần `fines`.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (cập nhật Prompt 8 và kết quả kiểm thử thực tế)
+  - `backend/src/utils/transaction.js`
+  - `backend/src/validators/equipment.validator.js`, `backend/src/validators/borrowing.validator.js`
+  - `backend/src/repositories/equipment.repository.js`, `backend/src/repositories/borrowing.repository.js`
+  - `backend/src/services/equipment.service.js`, `backend/src/services/borrowing.service.js`
+  - `backend/src/controllers/equipment.controller.js`, `backend/src/controllers/borrowing.controller.js`
+  - `backend/src/routes/equipment.routes.js`, `backend/src/routes/borrowing.routes.js`, `backend/src/routes/index.js` (cập nhật mount route)
+- **Kết quả mong đợi:**
+  - CRUD thiết bị đủ: danh sách (tìm kiếm theo mã/tên, lọc theo loại ENUM, phân trang `limit = 8`, `totalPages = 0` khi rỗng), xem chi tiết (`:id`), thêm mới, sửa (khóa row `FOR UPDATE`, kiểm tra trùng mã trừ chính mình, chặn `totalQuantity < currentBorrowed`), xóa (khóa row `FOR UPDATE`, chặn nếu đã phát sinh phiếu mượn).
+  - Mượn/trả đủ: danh sách phiếu mượn + lọc trạng thái (`all`, `borrowed`, `overdue`, `returned`) với mã `PM-xxx`, tạo phiếu mượn (khóa row thiết bị `FOR UPDATE`, kiểm tra tồn kho trong transaction, `borrowedAt = todayVN`, hạn trả `[0, 14]` ngày), trả thiết bị (khóa row phiếu `FOR UPDATE`, chặn trả trùng, chặn trả trước ngày mượn).
+  - Toàn bộ ca kiểm thử (gồm request đồng thời tạo phiếu mượn và rollback khi có lỗi giữa transaction) đều pass và đối chiếu khớp dữ liệu trong MySQL.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - *Phát hiện phòng ngừa trong lúc thiết kế trước khi chạy:*
+    1. MySQL `SUM(quantity)` trả về kiểu `DECIMAL` mà driver `mysql2` mặc định ép thành chuỗi (`"3"`), có thể làm sai phép so sánh hoặc kiểu JSON ở Frontend; đã ép `CAST(... AS SIGNED)` trong SQL kết hợp `Number(...)` ở Service/Mapper.
+    2. `z.coerce.number()` trong Zod có thể ép chuỗi rỗng `""` hoặc `false` thành `0`, khiến kiểm tra số nguyên ở JSON body lỏng lẻo; đã dùng `z.number().int()` cho body JSON và regex `/^[1-9]\d*$/` cho `params`/`query`.
+    3. Tách helper `runInTransaction` dùng chung 1 `conn` cho toàn bộ query trong transaction và luôn `release()` trong `finally`.
+  - *Kết quả kiểm thử thực tế đã xác minh:*
+    - `node -c` qua toàn bộ 23 file `.js` trong `backend/src/`.
+    - Kiểm thử CRUD thiết bị, phân trang (`14` bản ghi → 2 trang 8+6), tìm kiếm escape wildcard (`search=_` → `totalItems=0`, `totalPages=0`), xem chi tiết, chặn sửa `totalQuantity < borrowed`, chặn trùng `code`, chặn xóa thiết bị đã có phiếu (`409`).
+    - Kiểm thử danh sách/lọc phiếu mượn (`borrowed=7`, `overdue=3`, `returned=7`), tạo phiếu hợp lệ (biên `0` ngày và `14` ngày), chặn thiếu/âm/ngày giả `'2026-02-30'`/quá khứ/`15` ngày/vượt tồn kho, trả phiếu hợp lệ, chặn trả trùng (`409`), chặn trả trước ngày mượn (`400 INVALID_RETURN_DATE`).
+    - Kiểm thử đồng thời (`Promise.all` 5 request mượn cùng lúc trên tồn kho `2` → đúng 2 thành công `201`, 3 bị từ chối `409`, MySQL `activeQty = 2`; đua song song `PUT totalQuantity=1` vs `POST quantity=2` → `PUT` thắng `200`, `POST` bị chặn `409`, tồn kho MySQL còn `1 >= 0`).
+    - Kiểm thử rollback giữa transaction → `0` dòng rác; dọn sạch bản ghi test tạm để giữ nguyên tập seed (`14` thiết bị, `17` phiếu mượn, `4` khoản phạt).
+
+---
+
+## Prompt 9 – Rà soát kỹ thuật bổ sung (Concurrency 2 chiều, HTTP 409, Deadlock/Timeout) và tạo Commit #4
+
+- **Nhiệm vụ:** Thực hiện rà soát kỹ thuật bổ sung cho Backend Phần 1: (1) Kiểm thử concurrency chiều ngược lại (`POST /api/borrowings` khóa `equipments` trước, `PUT /api/equipments/:id` chờ đồng thời và phải bị chặn khi `POST` commit); (2) Rà soát và thống nhất HTTP status `409 Conflict` cho `TOTAL_QUANTITY_LESS_THAN_BORROWED`; (3) Điều chỉnh nhận định về deadlock (không tuyệt đối hóa "không bao giờ deadlock", bổ sung xử lý lỗi `ER_LOCK_DEADLOCK` và `ER_LOCK_WAIT_TIMEOUT` ở `errorHandler.js` với rollback + release an toàn); (4) Đối chiếu toàn bộ endpoint Phần 1 với đề bài gốc; (5) Tạo Commit #4 (`feat(backend): triển khai API thiết bị và mượn trả`).
+- **Phạm vi file thay đổi thêm:**
+  - `backend/src/services/equipment.service.js` (cập nhật `TOTAL_QUANTITY_LESS_THAN_BORROWED` từ `400` sang `409`)
+  - `backend/src/middlewares/errorHandler.js` (bổ sung xử lý `ER_LOCK_DEADLOCK` → `409` và `ER_LOCK_WAIT_TIMEOUT` → `503`)
+  - `prompts.md` (cập nhật Prompt 9)
+- **Kết quả kiểm thử thực tế & Điểm cải tiến:**
+  - *Điều chỉnh HTTP Status Code:* Đề gốc không khóa cứng mã HTTP cụ thể, chỉ yêu cầu từ chối rõ ràng theo định dạng `{ error: { code, message } }`. Vì `totalQuantity >= 0` là dữ liệu hợp lệ về kiểu/biên tĩnh nhưng xung đột với trạng thái đang cho mượn thực tế trong DB, việc chuyển `TOTAL_QUANTITY_LESS_THAN_BORROWED` sang **`409 Conflict`** giúp đồng bộ hoàn toàn với `DUPLICATE_EQUIPMENT_CODE`, `EQUIPMENT_HAS_BORROWINGS`, `INSUFFICIENT_QUANTITY` và `BORROWING_ALREADY_RETURNED`.
+  - *Điều chỉnh nhận định kỹ thuật về Deadlock & Lock Timeout:* Khóa cùng thứ tự trên `equipments (WHERE id = ? FOR UPDATE)` giúp **giảm thiểu nguy cơ deadlock** do vòng chờ khóa giữa các Transaction, nhưng không tuyệt đối hóa rằng hệ thống không thể gặp deadlock hoặc lock timeout dưới áp lực tải cao hay tương tác chéo chỉ mục trong InnoDB. Trong phạm vi bài tập chưa triển khai auto-retry phức tạp; khi gặp `ER_LOCK_DEADLOCK` (`409 CONCURRENT_CONFLICT`) hoặc `ER_LOCK_WAIT_TIMEOUT` (`503 LOCK_WAIT_TIMEOUT`), `runInTransaction` bảo đảm rollback và luôn `release()` connection, đồng thời trả thông báo tiếng Việt để client thử lại.
+  - *Kết quả test Concurrency chiều ngược lại:* Trên thiết bị test `totalQuantity = 2`, sử dụng khóa InnoDB thực tế giữ lệnh `INSERT` của `POST /api/borrowings` ngay sau khi `POST` đã khóa `equipments FOR UPDATE` trong lúc gửi đồng thời `PUT /api/equipments/:id` (`totalQuantity = 1`) → `POST` thành công (`201`), `PUT` bị chặn chờ rồi đọc lại `borrowedQuantity = 2` và bị từ chối (`409 TOTAL_QUANTITY_LESS_THAN_BORROWED`); đối chiếu MySQL có `totalQuantity = 2`, `borrowedQuantity = 2`, `availableQuantity = 0`.
+  - *Kết quả test Deadlock / Lock Timeout:* Đã xác minh `errorHandler` trả `409 CONCURRENT_CONFLICT` với `ER_LOCK_DEADLOCK`; kích hoạt thật `ER_LOCK_WAIT_TIMEOUT` từ MySQL (`innodb_lock_wait_timeout = 1`) bên trong `runInTransaction` xác nhận Transaction tự rollback, `conn.release()` không rò rỉ connection và `errorHandler` trả `503 LOCK_WAIT_TIMEOUT`.
+  - *Kiểm tra hồi quy & DB:* `node -c` đạt 23/23 file; toàn bộ kịch bản CRUD, lọc, phân trang, mượn/trả, dọn dữ liệu test sạch về đúng `14` thiết bị, `17` phiếu mượn, `4` khoản phạt.

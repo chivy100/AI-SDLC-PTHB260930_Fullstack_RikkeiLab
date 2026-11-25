@@ -43,6 +43,26 @@ function errorHandler(err, req, res, next) {
     });
   }
 
+  if (err && err.code === 'ER_LOCK_DEADLOCK') {
+    console.error(`[DB LOCK CONFLICT] ${err.code}`);
+    return res.status(409).json({
+      error: {
+        code: 'CONCURRENT_CONFLICT',
+        message: 'Xung đột giao dịch đồng thời trong cơ sở dữ liệu. Vui lòng thử lại.',
+      },
+    });
+  }
+
+  if (err && err.code === 'ER_LOCK_WAIT_TIMEOUT') {
+    console.error(`[DB LOCK TIMEOUT] ${err.code}`);
+    return res.status(503).json({
+      error: {
+        code: 'LOCK_WAIT_TIMEOUT',
+        message: 'Hệ thống đang bận xử lý giao dịch khác. Vui lòng thử lại sau.',
+      },
+    });
+  }
+
   if (err && DB_UNAVAILABLE_CODES.has(err.code)) {
     console.error(`[DB ERROR] ${err.code}`);
     return res.status(503).json({
