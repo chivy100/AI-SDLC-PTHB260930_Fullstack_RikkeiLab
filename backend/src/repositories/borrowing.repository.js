@@ -11,9 +11,15 @@ const BORROWING_DETAIL_SELECT = `
     DATE_FORMAT(b.borrowed_at, '%Y-%m-%d') AS borrowed_at,
     DATE_FORMAT(b.due_date, '%Y-%m-%d') AS due_date,
     DATE_FORMAT(b.returned_at, '%Y-%m-%d') AS returned_at,
-    b.note
+    b.note,
+    f.id AS fine_id,
+    f.late_days AS fine_late_days,
+    f.amount AS fine_amount,
+    f.status AS fine_status,
+    DATE_FORMAT(f.paid_at, '%Y-%m-%d') AS fine_paid_at
   FROM borrowings b
   INNER JOIN equipments e ON e.id = b.equipment_id
+  LEFT JOIN fines f ON f.borrowing_id = b.id
 `;
 
 async function findAll({ status, todayVN }, conn = pool) {

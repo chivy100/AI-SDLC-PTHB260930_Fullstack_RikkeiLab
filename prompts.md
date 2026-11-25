@@ -158,3 +158,52 @@ Tài liệu này ghi lại theo đúng thứ tự các prompt đã sử dụng v
   - *Kết quả test Concurrency chiều ngược lại:* Trên thiết bị test `totalQuantity = 2`, sử dụng khóa InnoDB thực tế giữ lệnh `INSERT` của `POST /api/borrowings` ngay sau khi `POST` đã khóa `equipments FOR UPDATE` trong lúc gửi đồng thời `PUT /api/equipments/:id` (`totalQuantity = 1`) → `POST` thành công (`201`), `PUT` bị chặn chờ rồi đọc lại `borrowedQuantity = 2` và bị từ chối (`409 TOTAL_QUANTITY_LESS_THAN_BORROWED`); đối chiếu MySQL có `totalQuantity = 2`, `borrowedQuantity = 2`, `availableQuantity = 0`.
   - *Kết quả test Deadlock / Lock Timeout:* Đã xác minh `errorHandler` trả `409 CONCURRENT_CONFLICT` với `ER_LOCK_DEADLOCK`; kích hoạt thật `ER_LOCK_WAIT_TIMEOUT` từ MySQL (`innodb_lock_wait_timeout = 1`) bên trong `runInTransaction` xác nhận Transaction tự rollback, `conn.release()` không rò rỉ connection và `errorHandler` trả `503 LOCK_WAIT_TIMEOUT`.
   - *Kiểm tra hồi quy & DB:* `node -c` đạt 23/23 file; toàn bộ kịch bản CRUD, lọc, phân trang, mượn/trả, dọn dữ liệu test sạch về đúng `14` thiết bị, `17` phiếu mượn, `4` khoản phạt.
+
+---
+
+## Prompt 10 – Giai đoạn 4 (Backend Phần 2A): Triển khai Fines (Chốt phạt khi trả trễ, `GET /api/fines`, `PATCH /api/fines/:id/pay`)
+
+- **Nhiệm vụ:** Đọc đối chiếu lại đề bài, `db/mo_rong.sql`, `borrowing.service.js`, `borrowing.repository.js`, `transaction.js` và Commit #4 (`f1c76a3`). Tích hợp tự động chốt phạt vào `PATCH /api/borrowings/:id/return` trong cùng Transaction; cập nhật thông tin phạt (tạm tính và đã chốt) trên `GET /api/borrowings`; triển khai `GET /api/fines` (phân biệt `collectedAmount`, `unpaidSettledAmount`, `provisionalAmount`, `totalOwedAmount`, không cộng trùng khi JOIN) và `PATCH /api/fines/:id/pay` (thanh toán toàn bộ 1 lần, khóa `FOR UPDATE` chống thu trùng, từ chối thay đổi `amount`/`dailyRate`/`paidAt` từ client). Chưa triển khai Frontend và chưa tạo Commit #5.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (cập nhật Prompt 10 và kết quả kiểm thử thực tế)
+  - `backend/src/utils/constants.js`
+  - `backend/src/validators/fine.validator.js`
+  - `backend/src/repositories/fine.repository.js`, `backend/src/repositories/borrowing.repository.js`
+  - `backend/src/services/fine.service.js`, `backend/src/services/borrowing.service.js`
+  - `backend/src/controllers/fine.controller.js`
+  - `backend/src/routes/fine.routes.js`, `backend/src/routes/index.js`
+- **Kết quả mong đợi:**
+  - Trả thiết bị đúng/sớm hạn không tạo bản ghi `fines`; trả trễ tạo đúng 1 bản ghi `fines` (`unpaid`, `paid_at = NULL`, `late_days * quantity * 5000`) trong cùng Transaction với `UPDATE borrowings.returned_at`.
+  - Hai request đồng thời trả cùng một phiếu quá hạn → chỉ 1 thành công, 1 nhận `409`, chỉ có 1 dòng `fines`.
+  - Hai request đồng thời thu cùng một khoản phạt → chỉ 1 chuyển sang `paid`, 1 nhận `409 FINE_ALREADY_PAID`.
+  - Rollback khi `INSERT fines` lỗi sau `UPDATE returned_at` → `returned_at` quay về `NULL`, không có dòng `fines`, không rò rỉ connection.
+  - Kiểm thử hồi quy toàn bộ Phần 1 vẫn pass 100%, kiểm tra trực tiếp dữ liệu MySQL sau test.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - *Phòng ngừa kỹ thuật trong lúc triển khai:*
+    1. Tách `DAILY_FINE_RATE = 5000` và `MAX_BORROW_DAYS = 14` vào `backend/src/utils/constants.js` để `borrowing.service.js` và `fine.service.js` dùng chung một nguồn hằng số duy nhất.
+    2. Tách câu truy vấn tổng hợp ở `fine.repository.js` (`getSummaryTotals`) thành 2 truy vấn tách biệt (1 trên `fines` cho `paid`/`unpaid`, 1 trên `borrowings LEFT JOIN fines WHERE f.id IS NULL` cho tạm tính) nhằm tránh tuyệt đối lỗi nhân bản dòng và đảm bảo 1 phiếu không bao giờ bị cộng ở cả 2 nhóm.
+    3. Ở `PATCH /api/fines/:id/pay`, dùng `payFineBodySchema` chặn luôn trường hợp client cố gửi body chứa `amount`, `dailyRate`, `paidAt` hoặc `status` (`400 VALIDATION_ERROR`), đồng thời vẫn cho phép request không có body (`undefined`) hoặc body rỗng `{}`.
+  - *Kết quả kiểm thử thực tế đã xác minh:*
+    - `node -c` đạt toàn bộ file `.js` trong `backend/src/`.
+    - `GET /api/fines` trên dữ liệu seed trả đúng: `collectedAmount = 80000`, `unpaidSettledAmount = 55000`, `provisionalAmount = 145000`, `totalOwedAmount = 200000`, tổng `7` dòng (`2` `unpaid`, `3` `provisional`, `2` `paid`), đồng bộ với `GET /api/borrowings`.
+    - Kiểm thử ngày: trả sớm/đúng hạn tạo `0` bản ghi `fines`; trễ `1` ngày × `2` thiết bị → tạm tính `10000`, khi trả chốt thành `unpaid` `10000` và giảm phần tạm tính đi `10000`; kiểm tra biên ranh giới nửa đêm UTC+7 của `getTodayVN`.
+    - Kiểm thử Concurrency trả trễ đồng thời (`Promise.all` 2 request trên phiếu trễ `3` ngày × `2` cái) → `1` thành công (`200`, `30000`), `1` bị chặn (`409 BORROWING_ALREADY_RETURNED`), MySQL chỉ có `1` bản ghi `fines`.
+    - Kiểm thử Concurrency thu phạt đồng thời (`Promise.all` 2 request trên cùng khoản phạt `30000`) → `1` thành công (`200`, `status = 'paid'`, `paidAt = todayVN`), `1` bị chặn (`409 FINE_ALREADY_PAID`), `collectedAmount` chỉ tăng thêm `30000`; từ chối `400` các body cố tình ghi đè `amount`/`dailyRate`/`paidAt`/`status`.
+    - Kiểm thử Rollback khi `fineRepo.create` ném lỗi sau khi `UPDATE borrowings.returned_at` → HTTP `500`, trong MySQL `returned_at` trở về `NULL`, `0` bản ghi `fines`, không rò rỉ connection.
+    - Chạy lại toàn bộ bộ test hồi quy Phần 1 (CRUD, tìm kiếm, phân trang, concurrency 2 chiều, deadlock/timeout) đều PASS 100%; dữ liệu MySQL sau dọn dẹp giữ nguyên `14` thiết bị, `17` phiếu mượn, `4` khoản phạt.
+
+---
+
+## Prompt 11 – Rà soát bảo mật/chất lượng Fines và tạo Commit #5
+
+- **Nhiệm vụ:** Đọc lại toàn bộ 9 file nguồn Backend liên quan đến Fines và `prompts.md`; kiểm tra 10 tiêu chí chất lượng/bảo mật (mức phạt 5.000 VNĐ đồng nhất, cùng Transaction/connection, không tạo phạt khi trả đúng/sớm hạn, tách biệt 3 nhóm tiền phạt không nhân bản dòng, chặn sửa payload thanh toán, không sót code test/monkey patch, `.env` & `node_modules/` ngoài Git), kiểm tra cú pháp JS và tạo Commit #5 (`feat(backend): tích hợp API quá hạn và tiền phạt`). Chưa triển khai Frontend.
+- **Phạm vi file commit:**
+  - `backend/src/utils/constants.js`
+  - `backend/src/validators/fine.validator.js`
+  - `backend/src/repositories/fine.repository.js`, `backend/src/repositories/borrowing.repository.js`
+  - `backend/src/services/fine.service.js`, `backend/src/services/borrowing.service.js`
+  - `backend/src/controllers/fine.controller.js`
+  - `backend/src/routes/fine.routes.js`, `backend/src/routes/index.js`
+  - `prompts.md`
+- **Kết quả kiểm tra & Lỗi phát hiện:**
+  - Đọc trực tiếp toàn bộ 10 file: không có code thừa/monkey patch kiểm thử, không lộ secret, `node -c` đạt toàn bộ file JS, `git diff --check` sạch, `backend/.env` và `backend/node_modules/` tiếp tục bị `.gitignore` chặn. Không có chỉnh sửa thêm vào code nên không cần chạy lại suite kiểm thử đã pass ở Prompt 10.

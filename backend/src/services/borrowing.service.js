@@ -1,10 +1,10 @@
 const equipmentRepo = require('../repositories/equipment.repository');
 const borrowingRepo = require('../repositories/borrowing.repository');
+const fineRepo = require('../repositories/fine.repository');
 const AppError = require('../utils/AppError');
+const { DAILY_FINE_RATE, MAX_BORROW_DAYS } = require('../utils/constants');
 const { getTodayVN, diffDays } = require('../utils/date');
 const { runInTransaction } = require('../utils/transaction');
-
-const MAX_BORROW_DAYS = 14;
 
 function formatBorrowingCode(id) {
   return `PM-${String(id).padStart(3, '0')}`;
@@ -20,7 +20,52 @@ function resolveBorrowingStatus(row, todayVN) {
   return 'borrowed';
 }
 
+function resolveBorrowingFineInfo(row, todayVN) {
+  const quantity = Number(row.quantity);
+
+  if (row.returned_at !== null) {
+    if (row.fine_id !== null && row.fine_id !== undefined) {
+      return {
+        fineId: Number(row.fine_id),
+        lateDays: Number(row.fine_late_days),
+        fineAmount: Number(row.fine_amount),
+        fineStatus: row.fine_status,
+        finePaidAt: row.fine_paid_at || null,
+      };
+    }
+
+    return {
+      fineId: null,
+      lateDays: 0,
+      fineAmount: 0,
+      fineStatus: 'none',
+      finePaidAt: null,
+    };
+  }
+
+  const overdueDays = diffDays(todayVN, row.due_date);
+  if (overdueDays > 0) {
+    return {
+      fineId: null,
+      lateDays: overdueDays,
+      fineAmount: overdueDays * quantity * DAILY_FINE_RATE,
+      fineStatus: 'provisional',
+      finePaidAt: null,
+    };
+  }
+
+  return {
+    fineId: null,
+    lateDays: 0,
+    fineAmount: 0,
+    fineStatus: 'none',
+    finePaidAt: null,
+  };
+}
+
 function toBorrowingDto(row, todayVN) {
+  const fineInfo = resolveBorrowingFineInfo(row, todayVN);
+
   return {
     id: Number(row.id),
     code: formatBorrowingCode(row.id),
@@ -34,6 +79,7 @@ function toBorrowingDto(row, todayVN) {
     returnedAt: row.returned_at,
     note: row.note || null,
     status: resolveBorrowingStatus(row, todayVN),
+    ...fineInfo,
   };
 }
 
@@ -140,7 +186,30 @@ async function returnBorrowing(id) {
       );
     }
 
-    // Diem mo rong Giai doan 4 (Fines): se chot khoan phat vao bang fines trong cung conn neu returnedAt > existing.due_date
+    const lateDays = diffDays(returnedAt, existing.due_date);
+    if (lateDays > 0) {
+      const fineAmount = lateDays * Number(existing.quantity) * DAILY_FINE_RATE;
+      try {
+        await fineRepo.create(
+          {
+            borrowingId: id,
+            lateDays,
+            dailyRate: DAILY_FINE_RATE,
+            amount: fineAmount,
+          },
+          conn
+        );
+      } catch (err) {
+        if (err && err.code === 'ER_DUP_ENTRY') {
+          throw new AppError(
+            409,
+            'BORROWING_ALREADY_RETURNED',
+            'Phiếu mượn này đã được ghi nhận trả và chốt tiền phạt trước đó.'
+          );
+        }
+        throw err;
+      }
+    }
 
     return borrowingRepo.findDetailedById(id, conn);
   });
