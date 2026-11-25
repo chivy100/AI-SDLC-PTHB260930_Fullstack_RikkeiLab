@@ -1,4 +1,9 @@
 export const VN_TIMEZONE = 'Asia/Ho_Chi_Minh';
+export const DAILY_FINE_RATE = 5000;
+export const MAX_BORROW_DAYS = 14;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 export const CATEGORY_LABELS = {
   laptop: 'Laptop',
@@ -10,6 +15,55 @@ export const CATEGORY_LABELS = {
 export const CATEGORY_OPTIONS = Object.entries(CATEGORY_LABELS).map(
   ([value, label]) => ({ value, label })
 );
+
+export const BORROWING_FILTER_OPTIONS = [
+  { value: 'all', label: 'Tất cả' },
+  { value: 'borrowed', label: 'Đang mượn' },
+  { value: 'overdue', label: 'Quá hạn' },
+  { value: 'returned', label: 'Đã trả' },
+];
+
+export const BORROWING_STATUS_META = {
+  borrowed: { label: 'Đang mượn', badgeClass: 'text-bg-primary' },
+  overdue: { label: 'Quá hạn', badgeClass: 'text-bg-danger' },
+  returned: { label: 'Đã trả', badgeClass: 'text-bg-success' },
+};
+
+export function parseIsoDateToUtcMs(isoDate) {
+  if (typeof isoDate !== 'string' || !ISO_DATE_REGEX.test(isoDate)) {
+    return null;
+  }
+
+  const [yearStr, monthStr, dayStr] = isoDate.split('-');
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+
+  const utcMs = Date.UTC(year, month - 1, day);
+  const check = new Date(utcMs);
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month - 1 ||
+    check.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return utcMs;
+}
+
+export function isValidIsoDate(value) {
+  return parseIsoDateToUtcMs(value) !== null;
+}
+
+export function diffDaysIso(laterIsoDate, earlierIsoDate) {
+  const laterMs = parseIsoDateToUtcMs(laterIsoDate);
+  const earlierMs = parseIsoDateToUtcMs(earlierIsoDate);
+  if (laterMs === null || earlierMs === null) {
+    return null;
+  }
+  return Math.round((laterMs - earlierMs) / MS_PER_DAY);
+}
 
 export function formatCategoryLabel(category) {
   return CATEGORY_LABELS[category] || category || '—';

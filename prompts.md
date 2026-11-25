@@ -269,3 +269,24 @@ Tài liệu này ghi lại theo đúng thứ tự các prompt đã sử dụng v
   - Sau kiểm thử đã dọn sạch dữ liệu tạm trên MySQL về nguyên trạng ban đầu (`14` thiết bị, `17` phiếu mượn, `4` khoản phạt).
 - **Lỗi AI đã phát hiện và cách xử lý:**
   - Khi chạy `browser` subagent kiểm thử trực quan trên Chrome (`http://localhost:5173/`), Chrome DevTools MCP báo lỗi `ENOENT` tại `DevToolsActivePort` do chưa bật Remote Debugging; kết quả MCP ban đầu được ghi nhận trung thực là chưa xác minh tự động, sau đó người dùng đã mở Chrome kiểm tra trực tiếp toàn bộ giao diện, modal, tương tác và responsive đạt yêu cầu trước khi phê duyệt Commit #6.
+
+---
+
+## Prompt 15 – Giai đoạn 5 (Bước 5.4): Triển khai màn hình Phiếu mượn thiết bị
+
+- **Nhiệm vụ:** Đọc đối chiếu `giao_dien_mau/phieu-muon.html`, `giao_dien_mau/mo_rong/a-tien-phat.html`, mục 4.4 của đề bài và mã nguồn API Backend (`borrowing.service.js`, `borrowing.repository.js`, `borrowing.validator.js`, `fine.repository.js`). Triển khai màn hình Phiếu mượn (`BorrowingPage`) gồm: `BorrowForm` (nạp đầy đủ thiết bị qua `GET /api/equipments?limit=100`, vô hiệu hóa thiết bị hết hàng, validate client khớp quy tắc UTC+7 và tối đa 14 ngày, ép `Number`), `BorrowFilter` (`all | borrowed | overdue | returned`), `BorrowTable` (hiển thị trạng thái và phân biệt rõ tiền phạt tạm tính với khoản phạt đã chốt), `ConfirmReturnModal` (phiếu đúng/sớm hạn) và `components/common/ReturnWithFineModal.jsx` (phiếu quá hạn, không gửi `fineAmount`/`returnedAt` từ client, đồng bộ lại cả danh sách phiếu và tồn kho thiết bị từ Backend sau thao tác). Không sửa Backend/Database, chưa triển khai màn hình Tiền phạt (Bước 5.5) và chưa tạo Commit #7.
+- **Phạm vi file dự kiến:**
+  - `prompts.md` (ghi Prompt 15 và cập nhật kết quả kiểm thử thực tế)
+  - `frontend/src/utils/format.js` (bổ sung hằng số phạt/thời hạn, helper kiểm tra/tính ngày UTC+7 và nhãn lọc trạng thái phiếu mượn)
+  - `frontend/src/services/borrowingService.js`
+  - `frontend/src/hooks/useBorrowings.js`
+  - `frontend/src/components/borrowings/BorrowForm.jsx`, `BorrowFilter.jsx`, `BorrowTable.jsx`, `ConfirmReturnModal.jsx`
+  - `frontend/src/components/common/ReturnWithFineModal.jsx`
+  - `frontend/src/pages/BorrowingPage.jsx`
+  - `frontend/src/App.jsx` (nối `BorrowingPage` vào tab `borrowings`)
+- **Kết quả thực tế đã kiểm chứng:**
+  - `node -c` đạt 5/5 file `.js` (`src/utils/format.js`, `src/services/borrowingService.js`, `src/hooks/useBorrowings.js`, `src/services/equipmentService.js`, `src/utils/error.js`); `npm run build` thành công (`vite v6.4.6`, `112 modules transformed`, tạo `dist/` trong `1.60s`).
+  - Kiểm thử tích hợp trực tiếp Vite (`http://localhost:5173`), Backend (`http://localhost:5000/api`) và MySQL (`rikkei_lab`) đạt toàn bộ: `GET /api/equipments?limit=100` nạp đủ `14` thiết bị, `GET /api/borrowings` lọc đủ `17` phiếu (`7` borrowed, `3` overdue tạm tính phạt, `7` returned), validate `400`/`409` (thiếu/0/âm/vượt tồn/hết hàng/ngày giả `2026-02-30`/trước hôm nay/vượt 14 ngày), tạo phiếu đồng bộ giảm tồn (`4 → 2`), trả đúng hạn khôi phục tồn (`2 → 4`), trả phiếu quá hạn tạm (lệch `3` ngày × `2` chiếc × `5.000 đ = 30.000 đ`) khớp chính xác khoản phạt Backend chốt trong Transaction, chống trả trùng đồng thời (`409`), hủy request qua `AbortController` và bắt lỗi `NETWORK_ERROR`.
+  - Sau kiểm thử đã dọn sạch dữ liệu tạm theo thứ tự Foreign Key (`fines` → `borrowings` → `equipments`) và đối chiếu MySQL còn nguyên `14` thiết bị, `17` phiếu mượn, `4` khoản phạt, `0` bản ghi `TEST-*`.
+- **Lỗi AI đã phát hiện và cách xử lý:**
+  - Khi gọi subagent `browser` kiểm tra Chrome (`http://localhost:5173/`), Chrome DevTools MCP báo `ENOENT` tại `DevToolsActivePort` do chưa bật Remote Debugging; phần kiểm tra tự động qua MCP được ghi nhận trung thực là chưa xác minh, sau đó giữ nguyên Backend (`http://localhost:5000`) và Vite (`http://localhost:5173`) hoạt động để người dùng mở Chrome kiểm tra trực tiếp toàn bộ form, dropdown hết hàng, 4 bộ lọc, bảng và 2 modal trả thiết bị đạt yêu cầu trước khi phê duyệt Commit #7.
