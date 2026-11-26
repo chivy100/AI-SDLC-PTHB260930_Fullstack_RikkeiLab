@@ -9,7 +9,7 @@
 1. [Tên dự án và mô tả bài toán](#1-tên-dự-án-và-mô-tả-bài-toán)
 2. [Các chức năng chính](#2-các-chức-năng-chính)
 3. [Công nghệ sử dụng và phiên bản thực tế](#3-công-nghệ-sử-dụng-và-phiên-bản-thực-tế)
-4. [Kiến trúc tổng thể và luồng xử lý](#4-kiến-trúc-tổng-thể-và-luồng-xử-lý)
+4. [Phân tích bài toán và thiết kế hệ thống](#4-phân-tích-bài-toán-và-thiết-kế-hệ-thống)
 5. [Cấu trúc thư mục dự án](#5-cấu-trúc-thư-mục-dự-án)
 6. [Yêu cầu môi trường trước khi cài đặt](#6-yêu-cầu-môi-trường-trước-khi-cài-đặt)
 7. [Hướng dẫn tạo Database và chạy các file SQL](#7-hướng-dẫn-tạo-database-và-chạy-các-file-sql)
@@ -18,7 +18,7 @@
 10. [Hướng dẫn chạy Backend và Frontend](#10-hướng-dẫn-chạy-backend-và-frontend)
 11. [Địa chỉ truy cập ứng dụng và Health API](#11-địa-chỉ-truy-cập-ứng-dụng-và-health-api)
 12. [Danh sách API theo từng nhóm nghiệp vụ](#12-danh-sách-api-theo-từng-nhóm-nghiệp-vụ)
-13. [Quy tắc mượn, trả, tồn kho và tiền phạt](#13-quy-tắc-mượn-trả-tồn-kho-và-tiền-phạt)
+13. [Giả định nghiệp vụ và kỹ thuật](#13-giả-định-nghiệp-vụ-và-kỹ-thuật)
 14. [Quy tắc Transaction, concurrency và rollback](#14-quy-tắc-transaction-concurrency-và-rollback)
 15. [Quy tắc bảo mật và xử lý lỗi](#15-quy-tắc-bảo-mật-và-xử-lý-lỗi)
 16. [Hướng dẫn kiểm thử bằng Newman / Postman](#16-hướng-dẫn-kiểm-thử-bằng-newman--postman)
@@ -74,7 +74,7 @@
 
 ---
 
-## 4. Kiến trúc tổng thể và luồng xử lý
+## 4. Phân tích bài toán và thiết kế hệ thống
 
 ```text
 ┌───────────────────────────┐       HTTP/JSON (Axios)       ┌───────────────────────────────────────────────────┐
@@ -329,7 +329,7 @@ Log thành công kỳ vọng (`frontend/vite.config.js` khóa `strictPort: true`
 
 ---
 
-## 13. Quy tắc mượn, trả, tồn kho và tiền phạt
+## 13. Giả định nghiệp vụ và kỹ thuật
 
 1. **Múi giờ nghiệp vụ thống nhất:** Cả Node.js (`backend/src/utils/date.js`) và MySQL Pool (`backend/src/config/db.js`, `timezone: '+07:00'` + `SET time_zone = '+07:00'`) đều dùng múi giờ **`Asia/Ho_Chi_Minh` (`+07:00`)** và định dạng ngày ISO `YYYY-MM-DD` qua API (`dateStrings: true`), hiển thị `dd/mm/yyyy` ở Frontend.
 2. **Tính tồn kho động (`availableQuantity`):** Bảng `equipments` không lưu cột `available_quantity` vật lý. Giá trị này luôn được Backend/MySQL tính động:
