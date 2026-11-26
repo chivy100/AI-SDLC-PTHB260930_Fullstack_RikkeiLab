@@ -1,0 +1,1869 @@
+{
+  "info": {
+    "_postman_id": "a2e711f5-31f9-468d-a245-1c1b8b405200",
+    "name": "Rikkei Lab API Collection",
+    "description": "Bộ Postman Collection kiểm thử toàn bộ API của hệ thống Rikkei Lab (Phần 1 + Phần 2 Hướng A). Phân tách rõ request [READ-ONLY] và [MUTATING]. Không chứa secret/mật khẩu DB.\n\nYÊU CẦU PHIÊN BẢN POSTMAN:\n- Hỗ trợ tối thiểu Postman Desktop >= v10.22 (khuyến nghị Postman v11) để dùng pm.execution.skipRequest() và pm.execution.setNextRequest(). Phiên bản cũ hơn thiếu skipRequest() sẽ ném Error trong nhánh fallback và không được bảo đảm chặn HTTP tương đương skipRequest().\n\nCƠ CHẾ AN TOÀN & FAIL-CLOSED:\n1. Chọn Environment 'Rikkei Lab - Local' (baseUrl = http://localhost:5000/api).\n2. Luôn chạy bắt đầu từ request 1.1 (GET /api/health, chỉ đọc):\n   - Pre-request của 1.1 kiểm tra 7 biến ID DB tạm (tempCrudEqId, tempCrudEqCode, tempFlowEqId, tempBorrowingId, tempOverdueEqId, tempOverdueBorrowingId, tempOverdueFineId):\n     + Nếu KHÔNG còn biến ID DB tạm: đặt runBlocked='false', runBlockedReason='', sinh runTag mới đúng một lần, đặt lại biến tham chiếu seed (lab001Id, outOfStockEqId) và reset tempBorrowingReturned='false', tempOverdueFinePaid='false'.\n     + Nếu CÒN ít nhất một biến ID DB tạm: KHÔNG sinh runTag mới, KHÔNG unset/ghi đè bất kỳ ID tạm nào, bật runBlocked='true', lưu chi tiết vào runBlockedReason. KHÔNG gọi skipRequest() hay setNextRequest(null) trong Pre-request của 1.1 để GET /api/health vẫn được gửi.\n   - Post-response (Tests) của 1.1:\n     + Nếu runBlocked === 'true': in runBlockedReason ra Postman Console, gọi pm.execution.setNextRequest(null) để kết thúc Collection Runner sau Health, và đánh FAIL một pm.test() thông báo không được bắt đầu lượt Runner mới.\n     + Nếu runBlocked === 'false': kiểm tra response Health bình thường và cho phép Runner tiếp tục.\n3. Khi runBlocked='true', Pre-request cấp Collection sẽ kiểm tra mọi request khác 1.1 trước khi gửi HTTP và gọi pm.execution.skipRequest() (+ setNextRequest(null)) để không gửi request MUTATING; Tests của các request bị skip sẽ không chạy.\n4. Người dùng CHỈ được xóa biến ID khỏi Environment sau khi đã chạy SQL cleanup đúng ID trên MySQL và kiểm tra 0 bản ghi còn lại, rồi chạy lại 1.1 để mở khóa.\n5. Chạy riêng Folder 2, Folder 3 hoặc Folder 5: phải chạy 1.1 trước (kiểm tra cleanup và lấy runTag) cùng các tiền đề (2.3 cho outOfStockEqId); các request tạo mới (2.6, 3.5, 3.10, 5.1, 5.2, 5.4) tự chặn nếu ID lượt trước vẫn còn. Tuyệt đối chỉ cleanup bằng SQL khóa theo ID theo thứ tự FK (fines -> borrowings -> equipments), dừng ngay nếu lệnh xóa con lỗi.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "function haltRunnerAndSkip(msg) {",
+          "  console.error(msg);",
+          "  // setNextRequest(null) chỉ định không xếp lịch request tiếp theo sau item hiện tại; skipRequest() hủy gửi HTTP của item hiện tại (Tests không chạy).",
+          "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+          "    pm.execution.setNextRequest(null);",
+          "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+          "    postman.setNextRequest(null);",
+          "  }",
+          "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+          "    pm.execution.skipRequest();",
+          "  } else {",
+          "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error trong Pre-request không bảo đảm tương đương skipRequest() trên phiên bản cũ.';",
+          "    console.error(`${unsupported} | ${msg}`);",
+          "    throw new Error(`${unsupported} ${msg}`);",
+          "  }",
+          "}",
+          "function getTodayVN() {",
+          "  // Tính ngày cố định UTC+07:00 thuần Date UTC (sandbox Newman không có bộ định dạng quốc tế)",
+          "  const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);",
+          "  const y = vnNow.getUTCFullYear();",
+          "  const m = String(vnNow.getUTCMonth() + 1).padStart(2, '0');",
+          "  const d = String(vnNow.getUTCDate()).padStart(2, '0');",
+          "  return `${y}-${m}-${d}`;",
+          "}",
+          "function addDays(iso, days) {",
+          "  const [y, m, d] = iso.split('-').map(Number);",
+          "  const dt = new Date(Date.UTC(y, m - 1, d + days));",
+          "  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;",
+          "}",
+          "const reqName = (pm.info && typeof pm.info.requestName === 'string') ? pm.info.requestName : '';",
+          "const isHealthCheck = reqName.startsWith('1.1 ');",
+          "// Kiểm tra fail-closed PHẢI là thao tác đầu tiên trước khi tính ngày hay chạy logic khác",
+          "if (!isHealthCheck && String(pm.environment.get('runBlocked') || '').trim() === 'true') {",
+          "  const reason = String(pm.environment.get('runBlockedReason') || 'Còn dữ liệu thử nghiệm chưa cleanup trong Environment/Database.').trim();",
+          "  haltRunnerAndSkip(`[BLOCKED] Không gửi request \"${reqName}\" vì runBlocked=true. ${reason} Sau khi cleanup MySQL và xác nhận xóa biến ID tạm tương ứng khỏi Environment, hãy chạy lại request 1.1 để mở khóa.`);",
+          "} else {",
+          "  const today = getTodayVN();",
+          "  pm.environment.set('todayIso', today);",
+          "  pm.environment.set('dueDate7', addDays(today, 7));",
+          "  pm.environment.set('dueDate15', addDays(today, 15));",
+          "  pm.environment.set('dueDatePast', addDays(today, -1));",
+          "  if (!pm.environment.get('baseUrl')) {",
+          "    pm.environment.set('baseUrl', 'http://localhost:5000/api');",
+          "  }",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Health",
+      "description": "Kiểm tra tình trạng API Server, kết nối MySQL (+07:00) và làm cổng kiểm tra an toàn trước khi bắt đầu lượt Runner mới. Request 1.1 luôn gửi GET /api/health (chỉ đọc) và chỉ kết thúc Runner ở Post-response khi phát hiện ID chưa cleanup.",
+      "item": [
+        {
+          "name": "1.1 [READ-ONLY] Check API & MySQL Health",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const DB_CLEANUP_KEYS = [",
+                  "  'tempCrudEqId',",
+                  "  'tempCrudEqCode',",
+                  "  'tempFlowEqId',",
+                  "  'tempBorrowingId',",
+                  "  'tempOverdueEqId',",
+                  "  'tempOverdueBorrowingId',",
+                  "  'tempOverdueFineId'",
+                  "];",
+                  "function getCleanupGuide(keys) {",
+                  "  const guides = [];",
+                  "  if (keys.some(k => k === 'tempCrudEqId' || k === 'tempCrudEqCode')) {",
+                  "    guides.push('Folder 2 (kiểm tra borrowings theo equipment_id = <tempCrudEqId> -> DELETE FROM equipments WHERE id = <tempCrudEqId>)');",
+                  "  }",
+                  "  if (keys.some(k => k === 'tempFlowEqId' || k === 'tempBorrowingId')) {",
+                  "    guides.push('Folder 3 (xóa borrowings trước nếu có -> kiểm tra 0 phiếu con -> xóa equipments theo <tempFlowEqId>)');",
+                  "  }",
+                  "  if (keys.some(k => k === 'tempOverdueEqId' || k === 'tempOverdueBorrowingId' || k === 'tempOverdueFineId')) {",
+                  "    guides.push('Folder 5 (xóa theo thứ tự FK fines -> borrowings -> equipments ứng với từng trường hợp A..E)');",
+                  "  }",
+                  "  return guides.join('; ');",
+                  "}",
+                  "const dirtyEntries = DB_CLEANUP_KEYS",
+                  "  .map((key) => {",
+                  "    const raw = pm.environment.get(key);",
+                  "    const val = raw === undefined || raw === null ? '' : String(raw).trim();",
+                  "    return { key, value: val };",
+                  "  })",
+                  "  .filter((entry) => entry.value !== '');",
+                  "if (dirtyEntries.length > 0) {",
+                  "  const details = dirtyEntries.map((e) => `${e.key}=${e.value}`).join(', ');",
+                  "  const guide = getCleanupGuide(dirtyEntries.map((e) => e.key));",
+                  "  const reason = `Phát hiện dữ liệu thử nghiệm chưa cleanup: [${details}]. Hướng dẫn cleanup đúng ID: ${guide}. Chỉ xóa các biến ID khỏi Environment SAU KHI đã xác nhận 0 bản ghi còn trong MySQL, rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[CLEANUP REQUIRED] ${reason}`);",
+                  "} else {",
+                  "  pm.environment.set('runBlocked', 'false');",
+                  "  pm.environment.set('runBlockedReason', '');",
+                  "  const freshRunTag = Date.now().toString(36).toUpperCase().slice(-6);",
+                  "  pm.environment.set('runTag', freshRunTag);",
+                  "  pm.environment.unset('lab001Id');",
+                  "  pm.environment.unset('outOfStockEqId');",
+                  "  pm.environment.set('tempBorrowingReturned', 'false');",
+                  "  pm.environment.set('tempOverdueFinePaid', 'false');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const isBlocked = String(pm.environment.get('runBlocked') || '').trim() === 'true';",
+                  "if (isBlocked) {",
+                  "  const reason = String(pm.environment.get('runBlockedReason') || 'Còn dữ liệu thử nghiệm chưa cleanup trong Environment/Database.').trim();",
+                  "  console.error(`[RUNNER BLOCKED AT 1.1] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  pm.test('Cổng kiểm tra 1.1: Không được bắt đầu lượt Runner mới khi còn ID thử nghiệm chưa cleanup', () => {",
+                  "    throw new Error(`Không được bắt đầu lượt Runner mới: ${reason}`);",
+                  "  });",
+                  "} else {",
+                  "  pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "  const body = pm.response.json();",
+                  "  pm.test('Database connected', () => {",
+                  "    pm.expect(body.status).to.eql('ok');",
+                  "    pm.expect(body.database).to.eql('connected');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health",
+            "description": "Điểm khởi đầu bắt buộc mỗi lượt Runner: Pre-request kiểm tra 7 biến ID DB tạm (không gọi skipRequest hay setNextRequest(null) để GET /api/health vẫn chạy). Nếu còn ID tạm -> đặt runBlocked='true', giữ nguyên ID và runTag; Post-response sẽ ghi runBlockedReason ra Console, gọi pm.execution.setNextRequest(null) để dừng Runner và ghi nhận một pm.test() FAIL rõ ràng."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Equipments",
+      "description": "Các request đọc và CRUD thiết bị phòng thực hành. Dữ liệu test CRUD dùng tiền tố TEST-PM-{{runTag}}-A.\n\nĐIỀU KIỆN CHẠY:\n- Chạy 1.1 trước để kiểm tra an toàn DB và cấp runTag.\n- Request 2.2 tìm chính xác code==='LAB-001' lưu lab001Id; 2.3 tìm chính xác code==='LAB-003' lưu outOfStockEqId.\n- Request 2.6 không chạy nếu tempCrudEqId hoặc tempCrudEqCode của lượt trước vẫn còn.\n\nDỌN DẸP NẾU DỪNG DỞ DANG SAU 2.6 (còn tempCrudEqId):\n- Bình thường, request 2.12 gọi DELETE /api/equipments/{{tempCrudEqId}} và chỉ unset 2 biến khi nhận HTTP 200.\n- Nếu 2.12 lỗi hoặc dừng giữa chừng: kiểm tra trong MySQL xem có phiếu mượn gắn với ID này chưa:\n  USE rikkei_lab;\n  SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempCrudEqId>;\n- Nếu cnt = 0: xóa qua 2.12 hoặc chạy `DELETE FROM equipments WHERE id = <tempCrudEqId>;` (kiểm 1 row affected).\n- Nếu cnt > 0: DỪNG LẠI, xử lý/xóa đúng phiếu mượn con trước khi xóa thiết bị.\n- Chỉ xóa tempCrudEqId và tempCrudEqCode khỏi Environment sau khi xác nhận `SELECT id FROM equipments WHERE id = <tempCrudEqId>;` trả 0 dòng, rồi chạy lại 1.1.",
+      "item": [
+        {
+          "name": "2.1 [READ-ONLY] List Equipments Page 1 (limit=8)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Pagination metadata valid', () => {",
+                  "  pm.expect(resBody.items).to.be.an('array');",
+                  "  pm.expect(resBody.items.length).to.be.at.most(8);",
+                  "  pm.expect(resBody.pagination).to.have.all.keys('page', 'limit', 'totalItems', 'totalPages');",
+                  "  pm.expect(resBody.pagination.page).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipments?page=1&limit=8&category=all"
+          }
+        },
+        {
+          "name": "2.2 [READ-ONLY] Search & Filter Equipment (LAB-001, laptop -> save lab001Id)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset('lab001Id');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Finds exact single LAB-001 laptop and stores dynamic lab001Id', () => {",
+                  "    pm.expect(resBody).to.be.an('object');",
+                  "    pm.expect(resBody.items).to.be.an('array');",
+                  "    pm.expect(resBody.pagination).to.be.an('object');",
+                  "    const matches = resBody.items.filter((item) => item && item.code === 'LAB-001');",
+                  "    pm.expect(matches.length, 'Phải tìm thấy đúng 1 bản ghi có code chính xác LAB-001 trong resBody.items').to.eql(1);",
+                  "    const target = matches[0];",
+                  "    pm.expect(target.category).to.eql('laptop');",
+                  "    pm.expect(target.id).to.be.a('number').and.above(0);",
+                  "    pm.environment.set('lab001Id', String(target.id));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipments?search=LAB-001&category=laptop&page=1&limit=100",
+            "description": "Xóa lab001Id cũ trước khi gọi, tìm với limit=100 và lọc chính xác code === 'LAB-001' (vì Backend dùng LIKE '%search%') rồi mới lưu động target.id vào lab001Id."
+          }
+        },
+        {
+          "name": "2.3 [READ-ONLY] Find Out-of-Stock Equipment (LAB-003 -> save outOfStockEqId)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset('outOfStockEqId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Finds exact single LAB-003 out of stock and stores outOfStockEqId', () => {",
+                  "    pm.expect(resBody).to.be.an('object');",
+                  "    pm.expect(resBody.items).to.be.an('array');",
+                  "    pm.expect(resBody.pagination).to.be.an('object');",
+                  "    const matches = resBody.items.filter((item) => item && item.code === 'LAB-003');",
+                  "    pm.expect(matches.length, 'Phải tìm thấy đúng 1 bản ghi có code chính xác LAB-003 trong resBody.items').to.eql(1);",
+                  "    const target = matches[0];",
+                  "    pm.expect(target.availableQuantity).to.eql(0);",
+                  "    pm.expect(target.id).to.be.a('number').and.above(0);",
+                  "    pm.environment.set('outOfStockEqId', String(target.id));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipments?search=LAB-003&category=all&page=1&limit=100",
+            "description": "Xóa outOfStockEqId cũ trước khi gọi, tìm với limit=100 và lọc chính xác code === 'LAB-003' + availableQuantity === 0 rồi mới lưu target.id vào outOfStockEqId."
+          }
+        },
+        {
+          "name": "2.4 [READ-ONLY] Get Equipment Detail (LAB-001 via {{lab001Id}})",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const labId = String(pm.environment.get('lab001Id') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(labId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng lab001Id. Hãy chạy request 2.2 thành công trước để lấy ID của LAB-001.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Equipment detail structure valid', () => {",
+                  "  pm.expect(resBody.equipment).to.be.an('object');",
+                  "  pm.expect(resBody.equipment.code).to.eql('LAB-001');",
+                  "  pm.expect(resBody.equipment.createdAt).to.match(/^\\d{4}-\\d{2}-\\d{2}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipments/{{lab001Id}}"
+          }
+        },
+        {
+          "name": "2.5 [READ-ONLY ERROR] Get Non-Existent Equipment (id=999999 -> 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404 Not Found', () => pm.response.to.have.status(404));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code EQUIPMENT_NOT_FOUND', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('EQUIPMENT_NOT_FOUND');",
+                  "  pm.expect(resBody.error.message).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipments/999999"
+          }
+        },
+        {
+          "name": "2.6 [MUTATING] Create Temp Equipment for CRUD (TEST-PM-{{runTag}}-A)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const leftover = ['tempCrudEqId', 'tempCrudEqCode']",
+                  "  .map((k) => ({ key: k, val: String(pm.environment.get(k) || '').trim() }))",
+                  "  .filter((e) => e.val !== '');",
+                  "if (leftover.length > 0) {",
+                  "  const list = leftover.map((e) => `${e.key}=${e.val}`).join(', ');",
+                  "  const reason = `Không thể tạo mới thiết bị CRUD ở 2.6 vì biến lượt trước vẫn còn: [${list}]. Hãy cleanup đúng ID rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[BLOCKED] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${reason}`);",
+                  "    throw new Error(`${unsupported} ${reason}`);",
+                  "  }",
+                  "}",
+                  "if (!String(pm.environment.get('runTag') || '').trim()) {",
+                  "  const msg = '[SKIP] Thiếu runTag. Hãy chạy request 1.1 trước để kiểm tra cleanup và cấp runTag.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 Created', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Created temp equipment saved to env', () => {",
+                  "    pm.expect(resBody.equipment).to.be.an('object');",
+                  "    pm.expect(resBody.equipment.id).to.be.a('number').and.above(0);",
+                  "    pm.expect(resBody.equipment.availableQuantity).to.eql(5);",
+                  "    pm.environment.set('tempCrudEqId', String(resBody.equipment.id));",
+                  "    pm.environment.set('tempCrudEqCode', resBody.equipment.code);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"TEST-PM-{{runTag}}-A\",\n  \"name\": \"Thiết bị Test Postman CRUD\",\n  \"category\": \"phu_kien\",\n  \"totalQuantity\": 5\n}"
+            },
+            "url": "{{baseUrl}}/equipments"
+          }
+        },
+        {
+          "name": "2.7 [MUTATING ERROR] Create Duplicate Equipment Code (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!String(pm.environment.get('tempCrudEqCode') || '').trim()) {",
+                  "  const msg = '[SKIP] Thiếu biến tempCrudEqCode. Hãy chạy request 2.6 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code DUPLICATE_EQUIPMENT_CODE', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('DUPLICATE_EQUIPMENT_CODE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{tempCrudEqCode}}\",\n  \"name\": \"Trùng mã thiết bị\",\n  \"category\": \"phu_kien\",\n  \"totalQuantity\": 2\n}"
+            },
+            "url": "{{baseUrl}}/equipments"
+          }
+        },
+        {
+          "name": "2.8 [MUTATING ERROR] Create Equipment Invalid Quantity (-1 -> 400)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!String(pm.environment.get('runTag') || '').trim()) {",
+                  "  const msg = '[SKIP] Thiếu runTag. Hãy chạy request 1.1 trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code VALIDATION_ERROR', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"TEST-PM-{{runTag}}-NEG\",\n  \"name\": \"Số lượng âm\",\n  \"category\": \"laptop\",\n  \"totalQuantity\": -1\n}"
+            },
+            "url": "{{baseUrl}}/equipments"
+          }
+        },
+        {
+          "name": "2.9 [MUTATING] Update Temp Equipment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const eqId = String(pm.environment.get('tempCrudEqId') || '').trim();",
+                  "const eqCode = String(pm.environment.get('tempCrudEqCode') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId) || !eqCode) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempCrudEqId/tempCrudEqCode. Hãy chạy request 2.6 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Updated equipment fields reflected', () => {",
+                  "  pm.expect(resBody.equipment.name).to.eql('Thiết bị Test Postman Đã Sửa');",
+                  "  pm.expect(resBody.equipment.totalQuantity).to.eql(8);",
+                  "  pm.expect(resBody.equipment.category).to.eql('man_hinh');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{tempCrudEqCode}}\",\n  \"name\": \"Thiết bị Test Postman Đã Sửa\",\n  \"category\": \"man_hinh\",\n  \"totalQuantity\": 8\n}"
+            },
+            "url": "{{baseUrl}}/equipments/{{tempCrudEqId}}"
+          }
+        },
+        {
+          "name": "2.10 [MUTATING ERROR] Update TotalQuantity < Borrowed on LAB-001 (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const labId = String(pm.environment.get('lab001Id') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(labId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng lab001Id. Hãy chạy request 2.2 thành công trước để lấy ID của LAB-001.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Blocked by TOTAL_QUANTITY_LESS_THAN_BORROWED (LAB-001 unchanged)', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('TOTAL_QUANTITY_LESS_THAN_BORROWED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"LAB-001\",\n  \"name\": \"Laptop Dell Latitude 5420\",\n  \"category\": \"laptop\",\n  \"totalQuantity\": 1\n}"
+            },
+            "url": "{{baseUrl}}/equipments/{{lab001Id}}",
+            "description": "Thử giảm tổng số lượng LAB-001 xuống 1 khi đang có 3 thiết bị được mượn. Request bị từ chối 409 nên không làm thay đổi dữ liệu seed."
+          }
+        },
+        {
+          "name": "2.11 [MUTATING ERROR] Delete Equipment With History LAB-001 (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const labId = String(pm.environment.get('lab001Id') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(labId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng lab001Id. Hãy chạy request 2.2 thành công trước để lấy ID của LAB-001.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Blocked by EQUIPMENT_HAS_BORROWINGS', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('EQUIPMENT_HAS_BORROWINGS');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/equipments/{{lab001Id}}"
+          }
+        },
+        {
+          "name": "2.12 [MUTATING CLEANUP] Delete Unused Temp CRUD Equipment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const eqId = String(pm.environment.get('tempCrudEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempCrudEqId. Hãy chạy request 2.6 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Deleted message returned and temp CRUD vars unset', () => {",
+                  "    pm.expect(resBody).to.be.an('object');",
+                  "    pm.expect(resBody.message).to.be.a('string').and.not.empty;",
+                  "    pm.environment.unset('tempCrudEqId');",
+                  "    pm.environment.unset('tempCrudEqCode');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/equipments/{{tempCrudEqId}}",
+            "description": "Chỉ unset tempCrudEqId và tempCrudEqCode khi API DELETE trả về HTTP 200 và body xác nhận xóa thành công."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Borrowings",
+      "description": "Kiểm thử danh sách, lọc 4 trạng thái, validate tạo phiếu mượn, trả đúng hạn, trả trùng (409) và khôi phục tồn kho.\n\nPHỤ THUỘC & CHẠY RIÊNG FOLDER 3:\n- Luôn chạy 1.1 trước (kiểm tra an toàn cleanup DB và cấp runTag) + 2.3 (lấy outOfStockEqId cho 3.6).\n- Request 3.5 tự chặn và bật runBlocked='true' nếu tempFlowEqId hoặc tempBorrowingId của lượt trước vẫn còn.\n- Request 3.10 tự chặn nếu tempBorrowingId đã tồn tại; 3.12 và 3.13 chỉ chạy khi 3.11 đã xác nhận trả thành công (tempBorrowingReturned === 'true').\n\nHƯỚNG DẪN DỌN DẸP SQL CHO CÁC TÌNH HUỐNG (CHỈ DÙNG ID CỤ THỂ, KHÔNG DÙNG LIKE/PREFIX):\n\n1) Tình huống 1 – Mới tạo thiết bị (3.5), chưa tạo phiếu mượn (chỉ có tempFlowEqId, tempBorrowingId rỗng):\n  USE rikkei_lab;\n  SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempFlowEqId>;\n  -- Chỉ khi cnt = 0 mới chạy:\n  DELETE FROM equipments WHERE id = <tempFlowEqId>;\n\n2) Tình huống 2 – Đã tạo thiết bị (3.5) và phiếu mượn (3.10) nhưng chưa trả (tempBorrowingId có giá trị, returned_at IS NULL):\n  (Không chạy DELETE FROM fines vì chưa phát sinh khoản phạt.)\n  USE rikkei_lab;\n  DELETE FROM borrowings WHERE id = <tempBorrowingId> AND equipment_id = <tempFlowEqId>;\n  -- Kiểm tra affected rows = 1 và xác nhận:\n  SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempFlowEqId>;\n  -- Nếu DELETE thất bại hoặc cnt > 0: DỪNG LẠI, không xóa equipments. Khi cnt = 0:\n  DELETE FROM equipments WHERE id = <tempFlowEqId>;\n\n3) Tình huống 3 – Đã trả phiếu đúng hạn (3.11 thành công) / hoàn tất cả Folder 3:\n  -- Trả đúng hạn không tạo dòng fines; kiểm tra dự phòng trước khi xóa:\n  USE rikkei_lab;\n  SELECT id FROM fines WHERE borrowing_id = <tempBorrowingId>; -- phải ra 0 dòng\n  DELETE FROM borrowings WHERE id = <tempBorrowingId> AND equipment_id = <tempFlowEqId>;\n  -- Kiểm tra affected rows = 1 và SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempFlowEqId>; ra 0:\n  DELETE FROM equipments WHERE id = <tempFlowEqId>;\n\n4) Tình huống 4 – Cleanup một bản ghi thất bại hoặc nghi ngờ còn phiếu khác gắn với <tempFlowEqId>:\n  -- DỪNG LẠI ngay nếu DELETE borrowings lỗi hoặc affected rows != 1. Kiểm tra bằng ID:\n  SELECT id, equipment_id, returned_at FROM borrowings WHERE equipment_id = <tempFlowEqId>;\n  -- Xóa đúng từng id phiếu con (và fine con nếu có) rồi kiểm tra SELECT COUNT(*) = 0 trước khi DELETE FROM equipments WHERE id = <tempFlowEqId>;.\n\nSAU KHI XÁC NHẬN 0 DÒNG CÒN TRONG MYSQL: mới xóa tempFlowEqId, tempBorrowingId khỏi Environment, rồi chạy lại 1.1 để mở khóa.",
+      "item": [
+        {
+          "name": "3.1 [READ-ONLY] List All Borrowings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Items array returned with PM-xxx code', () => {",
+                  "  pm.expect(resBody.items).to.be.an('array').and.not.empty;",
+                  "  pm.expect(resBody.items[0].code).to.match(/^PM-\\d{3,}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings?status=all"
+          }
+        },
+        {
+          "name": "3.2 [READ-ONLY] Filter Borrowings (status=borrowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('All returned items have status=borrowed', () => {",
+                  "  pm.expect(resBody.items.every(i => i.status === 'borrowed')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings?status=borrowed"
+          }
+        },
+        {
+          "name": "3.3 [READ-ONLY] Filter Borrowings (status=overdue)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('All overdue items carry provisional fine without fineId', () => {",
+                  "  pm.expect(resBody.items.every(i => i.status === 'overdue' && i.fineStatus === 'provisional' && i.fineId === null)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings?status=overdue"
+          }
+        },
+        {
+          "name": "3.4 [READ-ONLY] Filter Borrowings (status=returned)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('All items have status=returned and returnedAt', () => {",
+                  "  pm.expect(resBody.items.every(i => i.status === 'returned' && i.returnedAt !== null)).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings?status=returned"
+          }
+        },
+        {
+          "name": "3.5 [MUTATING SETUP] Create Temp Equipment for Borrowing Flow (TEST-PM-{{runTag}}-B)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const leftover = ['tempFlowEqId', 'tempBorrowingId']",
+                  "  .map((k) => ({ key: k, val: String(pm.environment.get(k) || '').trim() }))",
+                  "  .filter((e) => e.val !== '');",
+                  "if (leftover.length > 0) {",
+                  "  const list = leftover.map((e) => `${e.key}=${e.val}`).join(', ');",
+                  "  const reason = `Không thể chạy 3.5 tạo thiết bị mới vì dữ liệu Folder 3 của lượt trước vẫn còn: [${list}]. Hãy thực hiện SQL cleanup đúng ID theo hướng dẫn Folder 3, xóa biến tương ứng sau khi xác nhận 0 dòng trong DB, rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[BLOCKED] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${reason}`);",
+                  "    throw new Error(`${unsupported} ${reason}`);",
+                  "  }",
+                  "}",
+                  "if (!String(pm.environment.get('runTag') || '').trim()) {",
+                  "  const msg = '[SKIP] Thiếu runTag. Khi chạy riêng Folder 3, hãy chạy 1.1 (cấp runTag) và 2.3 (lấy outOfStockEqId cho 3.6) trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 Created', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Stores tempFlowEqId for Folder 3 tests', () => {",
+                  "    pm.expect(resBody.equipment).to.be.an('object');",
+                  "    pm.expect(resBody.equipment.id).to.be.a('number').and.above(0);",
+                  "    pm.environment.set('tempFlowEqId', String(resBody.equipment.id));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"TEST-PM-{{runTag}}-B\",\n  \"name\": \"Thiết bị Test Luồng Mượn Trả\",\n  \"category\": \"mach_dien_tu\",\n  \"totalQuantity\": 3\n}"
+            },
+            "url": "{{baseUrl}}/equipments"
+          }
+        },
+        {
+          "name": "3.6 [MUTATING ERROR] Borrow Out-of-Stock Equipment (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const outId = String(pm.environment.get('outOfStockEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(outId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng outOfStockEqId. Hãy chạy request 2.3 trước để lấy ID thiết bị hết hàng (LAB-003).';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code INSUFFICIENT_QUANTITY', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('INSUFFICIENT_QUANTITY');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": {{outOfStockEqId}},\n  \"borrowerName\": \"Người Test Hết Hàng\",\n  \"quantity\": 1,\n  \"dueDate\": \"{{dueDate7}}\",\n  \"note\": null\n}"
+            },
+            "url": "{{baseUrl}}/borrowings"
+          }
+        },
+        {
+          "name": "3.7 [MUTATING ERROR] DueDate Exceeds 14 Days (-> 400)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const eqId = String(pm.environment.get('tempFlowEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempFlowEqId. Hãy chạy request 3.5 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code DUE_DATE_EXCEEDS_LIMIT', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('DUE_DATE_EXCEEDS_LIMIT');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": {{tempFlowEqId}},\n  \"borrowerName\": \"Người Test Quá 14 Ngày\",\n  \"quantity\": 1,\n  \"dueDate\": \"{{dueDate15}}\",\n  \"note\": null\n}"
+            },
+            "url": "{{baseUrl}}/borrowings"
+          }
+        },
+        {
+          "name": "3.8 [MUTATING ERROR] Past DueDate Rejected ({{dueDatePast}} -> 400)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const eqId = String(pm.environment.get('tempFlowEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempFlowEqId. Hãy chạy request 3.5 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code INVALID_DUE_DATE', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('INVALID_DUE_DATE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": {{tempFlowEqId}},\n  \"borrowerName\": \"Người Test Hạn Quá Khứ\",\n  \"quantity\": 1,\n  \"dueDate\": \"{{dueDatePast}}\",\n  \"note\": null\n}"
+            },
+            "url": "{{baseUrl}}/borrowings"
+          }
+        },
+        {
+          "name": "3.9 [MUTATING ERROR] Borrow Quantity Exceeds Stock (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const eqId = String(pm.environment.get('tempFlowEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempFlowEqId. Hãy chạy request 3.5 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code INSUFFICIENT_QUANTITY', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('INSUFFICIENT_QUANTITY');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": {{tempFlowEqId}},\n  \"borrowerName\": \"Người Test Vượt Tồn\",\n  \"quantity\": 4,\n  \"dueDate\": \"{{dueDate7}}\",\n  \"note\": null\n}"
+            },
+            "url": "{{baseUrl}}/borrowings"
+          }
+        },
+        {
+          "name": "3.10 [MUTATING] Create Valid Borrowing (qty=2, dueDate=7d -> 201)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const existingBorrowing = String(pm.environment.get('tempBorrowingId') || '').trim();",
+                  "if (existingBorrowing !== '') {",
+                  "  const reason = `Không thể tạo phiếu mượn ở 3.10 vì tempBorrowingId=${existingBorrowing} của lượt trước vẫn còn. Hãy cleanup DB đúng ID rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[BLOCKED] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${reason}`);",
+                  "    throw new Error(`${unsupported} ${reason}`);",
+                  "  }",
+                  "}",
+                  "const eqId = String(pm.environment.get('tempFlowEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempFlowEqId. Hãy chạy request 3.5 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 Created', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Borrowing created cleanly and saved to tempBorrowingId', () => {",
+                  "    pm.expect(resBody.borrowing).to.be.an('object');",
+                  "    pm.expect(resBody.borrowing.id).to.be.a('number').and.above(0);",
+                  "    pm.expect(resBody.borrowing.status).to.eql('borrowed');",
+                  "    pm.expect(resBody.borrowing.code).to.match(/^PM-\\d{3,}$/);",
+                  "    pm.environment.set('tempBorrowingId', String(resBody.borrowing.id));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": {{tempFlowEqId}},\n  \"borrowerName\": \"Người Test Postman Hợp Lệ\",\n  \"quantity\": 2,\n  \"dueDate\": \"{{dueDate7}}\",\n  \"note\": \"Kiểm thử Postman\"\n}"
+            },
+            "url": "{{baseUrl}}/borrowings"
+          }
+        },
+        {
+          "name": "3.11 [MUTATING] Return Borrowing On-Time (no payload -> 200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('tempBorrowingReturned', 'false');",
+                  "const bId = String(pm.environment.get('tempBorrowingId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(bId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempBorrowingId. Hãy chạy request 3.10 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('tempBorrowingReturned', 'false');",
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Returned on-time with no fine and marks tempBorrowingReturned=true', () => {",
+                  "    pm.expect(resBody).to.be.an('object');",
+                  "    pm.expect(resBody.borrowing).to.be.an('object');",
+                  "    pm.expect(Number(resBody.borrowing.id)).to.eql(Number(pm.environment.get('tempBorrowingId')));",
+                  "    pm.expect(resBody.borrowing.status).to.eql('returned');",
+                  "    pm.expect(resBody.borrowing.returnedAt).to.eql(pm.environment.get('todayIso'));",
+                  "    pm.expect(resBody.borrowing.fineId).to.be.null;",
+                  "    pm.expect(resBody.borrowing.fineStatus).to.eql('none');",
+                  "    pm.environment.set('tempBorrowingReturned', 'true');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings/{{tempBorrowingId}}/return",
+            "description": "Không gửi fineAmount/returnedAt từ client. Chỉ bật tempBorrowingReturned='true' khi HTTP 200 và body xác nhận returned đúng hạn."
+          }
+        },
+        {
+          "name": "3.12 [MUTATING ERROR] Double Return Blocked (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const bId = String(pm.environment.get('tempBorrowingId') || '').trim();",
+                  "const isReturned = String(pm.environment.get('tempBorrowingReturned') || '').trim() === 'true';",
+                  "if (!/^[1-9]\\d*$/.test(bId) || !isReturned) {",
+                  "  const msg = '[SKIP] Request 3.11 (trả phiếu mượn lần đầu) chưa xác nhận thành công (tempBorrowingReturned !== true) hoặc thiếu tempBorrowingId. Bỏ qua 3.12.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code BORROWING_ALREADY_RETURNED', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('BORROWING_ALREADY_RETURNED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings/{{tempBorrowingId}}/return"
+          }
+        },
+        {
+          "name": "3.13 [READ-ONLY] Verify Inventory Restored on TEST-PM-B",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const eqId = String(pm.environment.get('tempFlowEqId') || '').trim();",
+                  "const bId = String(pm.environment.get('tempBorrowingId') || '').trim();",
+                  "const isReturned = String(pm.environment.get('tempBorrowingReturned') || '').trim() === 'true';",
+                  "if (!/^[1-9]\\d*$/.test(eqId) || !/^[1-9]\\d*$/.test(bId) || !isReturned) {",
+                  "  const msg = '[SKIP] Kiểm tra khôi phục tồn kho 3.13 chỉ chạy sau khi 3.10 và 3.11 đã thành công (tempBorrowingReturned === true).';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Inventory availableQuantity restored to 3 after return', () => {",
+                  "  pm.expect(resBody.equipment.id).to.eql(Number(pm.environment.get('tempFlowEqId')));",
+                  "  pm.expect(resBody.equipment.availableQuantity).to.eql(3);",
+                  "  pm.expect(resBody.equipment.borrowedQuantity).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/equipments/{{tempFlowEqId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Fines",
+      "description": "Kiểm thử tổng hợp và danh sách 3 nhóm tiền phạt (provisional/unpaid/paid) cùng xử lý lỗi thu phạt không tác động dữ liệu seed.",
+      "item": [
+        {
+          "name": "4.1 [READ-ONLY] List & Summary Fines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Summary totals consistent (no double count)', () => {",
+                  "  pm.expect(resBody.summary).to.have.all.keys('dailyRate', 'collectedAmount', 'unpaidSettledAmount', 'provisionalAmount', 'totalOwedAmount');",
+                  "  pm.expect(resBody.summary.dailyRate).to.eql(5000);",
+                  "  pm.expect(resBody.summary.totalOwedAmount).to.eql(resBody.summary.unpaidSettledAmount + resBody.summary.provisionalAmount);",
+                  "});",
+                  "pm.test('Items obey null invariants per fineStatus', () => {",
+                  "  pm.expect(resBody.items).to.be.an('array');",
+                  "  for (const item of resBody.items) {",
+                  "    if (item.fineStatus === 'provisional') {",
+                  "      pm.expect(item.fineId).to.be.null;",
+                  "      pm.expect(item.returnedAt).to.be.null;",
+                  "      pm.expect(item.paidAt).to.be.null;",
+                  "    } else if (item.fineStatus === 'unpaid') {",
+                  "      pm.expect(item.fineId).to.be.a('number');",
+                  "      pm.expect(item.returnedAt).to.be.a('string');",
+                  "      pm.expect(item.paidAt).to.be.null;",
+                  "    } else if (item.fineStatus === 'paid') {",
+                  "      pm.expect(item.fineId).to.be.a('number');",
+                  "      pm.expect(item.paidAt).to.be.a('string');",
+                  "    }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/fines"
+          }
+        },
+        {
+          "name": "4.2 [MUTATING ERROR] Pay Missing Fine (id=999999 -> 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 404 Not Found', () => pm.response.to.have.status(404));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code FINE_NOT_FOUND', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('FINE_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/fines/999999/pay"
+          }
+        },
+        {
+          "name": "4.3 [MUTATING ERROR] Reject Client Amount Override (id=999999 -> 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Blocked by VALIDATION_ERROR before touching DB', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 0\n}"
+            },
+            "url": "{{baseUrl}}/fines/999999/pay",
+            "description": "Gọi với ID kiểm thử 999999 để chứng minh payFineBodySchema từ chối payload ghi đè ngay tại Zod Controller (HTTP 400 VALIDATION_ERROR) trước khi truy vấn DB, hoàn toàn không chạm tới bản ghi seed."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Overdue Pay (Manual SQL Setup Required)",
+      "description": "QUY TRÌNH KIỂM THỬ THU PHẠT QUÁ HẠN AN TOÀN (KHÔNG CHẠM SEED):\nNếu chạy riêng Folder 5, BẮT BUỘC chạy 1.1 trước (kiểm tra sạch ID DB cũ & cấp runTag).\n5.1 tự chặn (bật runBlocked='true') nếu còn tempOverdueEqId, tempOverdueBorrowingId hoặc tempOverdueFineId của lượt trước.\n5.6 chỉ chạy khi 5.5 xác nhận thu tiền thành công (tempOverdueFinePaid === 'true').\n\nCÁC BƯỚC THỰC HIỆN CHUẨN:\nBước 1: Chạy 5.1 tạo TEST-PM-{{runTag}}-C (lưu tempOverdueEqId).\nBước 2: Chạy 5.2 tạo phiếu mượn hợp lệ (lưu tempOverdueBorrowingId).\nBước 3 (SQL - Khóa theo ID chính xác):\n  USE rikkei_lab;\n  SET time_zone = '+07:00';\n  UPDATE borrowings\n  SET borrowed_at = DATE_SUB(CURDATE(), INTERVAL 6 DAY),\n      due_date    = DATE_SUB(CURDATE(), INTERVAL 3 DAY)\n  WHERE id = <tempOverdueBorrowingId>\n    AND equipment_id = <tempOverdueEqId>\n    AND returned_at IS NULL;\nBước 4: Chạy 5.3 xác nhận quá hạn 3 ngày (provisional = 30.000 đ).\nBước 5: Chạy 5.4 (PATCH /return) -> chốt fines (30.000 đ) và lưu tempOverdueFineId.\nBước 6: Chạy 5.5 (200 paid) và 5.6 (409 FINE_ALREADY_PAID).\n\nHƯỚNG DẪN CLEANUP SQL THEO TỪNG TRƯỜNG HỢP (TUYỆT ĐỐI KHÔNG DÙNG LIKE/PREFIX):\n\n- Trường hợp A – Chỉ mới tạo thiết bị (5.1), chưa tạo phiếu mượn (chỉ có tempOverdueEqId):\n  (Không chạy DELETE FROM fines hay DELETE FROM borrowings với placeholder rỗng.)\n  USE rikkei_lab;\n  SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempOverdueEqId>; -- phải = 0\n  DELETE FROM equipments WHERE id = <tempOverdueEqId>;\n\n- Trường hợp B – Đã tạo thiết bị (5.1) và phiếu mượn (5.2), chưa cập nhật ngày quá hạn:\n  (Chưa phát sinh bản ghi fines -> KHÔNG chạy DELETE FROM fines.)\n  USE rikkei_lab;\n  SELECT id FROM fines WHERE borrowing_id = <tempOverdueBorrowingId>; -- kiểm tra = 0 dòng\n  DELETE FROM borrowings WHERE id = <tempOverdueBorrowingId> AND equipment_id = <tempOverdueEqId>;\n  -- Kiểm tra affected rows = 1 và SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempOverdueEqId>; = 0; nếu lỗi -> DỪNG trước khi xóa equipments.\n  DELETE FROM equipments WHERE id = <tempOverdueEqId>;\n\n- Trường hợp C – Đã cập nhật quá hạn (Bước 3) / chạy 5.3, nhưng chưa trả thiết bị (5.4 chưa chạy, chưa phát sinh fine):\n  (Mới là provisional trên RAM, bảng fines chưa có bản ghi -> KHÔNG chạy DELETE FROM fines.)\n  Thực hiện chính xác như Trường hợp B theo <tempOverdueBorrowingId> và <tempOverdueEqId>.\n\n- Trường hợp D – Đã trả thiết bị (5.4) và phát sinh fine (unpaid) nhưng chưa thu tiền (5.5 chưa chạy/lỗi):\n  1) Nếu 5.4 trả 200 nhưng script chưa lưu được tempOverdueFineId, truy vấn chính xác theo borrowing_id của phiếu thử nghiệm:\n     USE rikkei_lab;\n     SELECT id, borrowing_id, amount, status FROM fines WHERE borrowing_id = <tempOverdueBorrowingId>;\n  2) Xóa từng lệnh theo đúng thứ tự FK và kiểm tra kết quả từng lệnh:\n     DELETE FROM fines WHERE id = <tempOverdueFineId_hoặc_id_vừa_tìm> AND borrowing_id = <tempOverdueBorrowingId>;\n     -- Kiểm tra 1 row affected và SELECT id FROM fines WHERE borrowing_id = <tempOverdueBorrowingId>; = 0 dòng. NẾU THẤT BẠI -> DỪNG trước khi xóa borrowings!\n     DELETE FROM borrowings WHERE id = <tempOverdueBorrowingId> AND equipment_id = <tempOverdueEqId>;\n     -- Kiểm tra 1 row affected và SELECT COUNT(*) AS cnt FROM borrowings WHERE equipment_id = <tempOverdueEqId>; = 0. NẾU THẤT BẠI -> DỪNG trước khi xóa equipments!\n     DELETE FROM equipments WHERE id = <tempOverdueEqId>;\n\n- Trường hợp E – Đã thu tiền thành công (5.5 & 5.6 hoàn tất):\n  Thực hiện tuần tự từng lệnh kiểm chứng giống Trường hợp D (fines -> borrowings -> equipments) bằng tempOverdueFineId, tempOverdueBorrowingId, tempOverdueEqId.\n\nSAU KHI XÁC NHẬN 0 DÒNG CÒN TRONG MYSQL: mới xóa tempOverdueEqId, tempOverdueBorrowingId, tempOverdueFineId khỏi Environment rồi chạy lại 1.1.",
+      "item": [
+        {
+          "name": "5.1 [MUTATING SETUP] Create Temp Equipment for Overdue Flow (TEST-PM-{{runTag}}-C)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const leftover = ['tempOverdueEqId', 'tempOverdueBorrowingId', 'tempOverdueFineId']",
+                  "  .map((k) => ({ key: k, val: String(pm.environment.get(k) || '').trim() }))",
+                  "  .filter((e) => e.val !== '');",
+                  "if (leftover.length > 0) {",
+                  "  const list = leftover.map((e) => `${e.key}=${e.val}`).join(', ');",
+                  "  const reason = `Không thể chạy 5.1 tạo thiết bị mới vì dữ liệu Folder 5 của lượt trước vẫn còn: [${list}]. Hãy thực hiện SQL cleanup đúng ID theo Trường hợp A..E trong mô tả Folder 5, xóa biến sau khi xác nhận 0 dòng trong DB, rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[BLOCKED] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${reason}`);",
+                  "    throw new Error(`${unsupported} ${reason}`);",
+                  "  }",
+                  "}",
+                  "if (!String(pm.environment.get('runTag') || '').trim()) {",
+                  "  const msg = '[SKIP] Thiếu runTag. Hãy chạy request 1.1 trước khi bắt đầu một lượt Folder 5 mới.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 Created', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Stores tempOverdueEqId', () => {",
+                  "    pm.expect(resBody.equipment).to.be.an('object');",
+                  "    pm.expect(resBody.equipment.id).to.be.a('number').and.above(0);",
+                  "    pm.environment.set('tempOverdueEqId', String(resBody.equipment.id));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"TEST-PM-{{runTag}}-C\",\n  \"name\": \"Thiết bị Test Thu Phạt Quá Hạn\",\n  \"category\": \"phu_kien\",\n  \"totalQuantity\": 3\n}"
+            },
+            "url": "{{baseUrl}}/equipments"
+          }
+        },
+        {
+          "name": "5.2 [MUTATING SETUP] Create Temp Borrowing Before SQL Backdate (-> 201)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const existingFollowup = ['tempOverdueBorrowingId', 'tempOverdueFineId']",
+                  "  .map((k) => ({ key: k, val: String(pm.environment.get(k) || '').trim() }))",
+                  "  .filter((e) => e.val !== '');",
+                  "if (existingFollowup.length > 0) {",
+                  "  const list = existingFollowup.map((e) => `${e.key}=${e.val}`).join(', ');",
+                  "  const reason = `Không thể chạy 5.2 vì biến lượt trước vẫn còn: [${list}]. Hãy cleanup DB đúng ID rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[BLOCKED] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${reason}`);",
+                  "    throw new Error(`${unsupported} ${reason}`);",
+                  "  }",
+                  "}",
+                  "const eqId = String(pm.environment.get('tempOverdueEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempOverdueEqId. Hãy chạy request 5.1 thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 Created', () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Stores tempOverdueBorrowingId for SQL backdate step', () => {",
+                  "    pm.expect(resBody.borrowing).to.be.an('object');",
+                  "    pm.expect(resBody.borrowing.id).to.be.a('number').and.above(0);",
+                  "    pm.environment.set('tempOverdueBorrowingId', String(resBody.borrowing.id));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"equipmentId\": {{tempOverdueEqId}},\n  \"borrowerName\": \"Người Test Quá Hạn Postman\",\n  \"quantity\": 2,\n  \"dueDate\": \"{{dueDate7}}\",\n  \"note\": \"Sẽ chỉnh hạn quá hạn 3 ngày bằng SQL\"\n}"
+            },
+            "url": "{{baseUrl}}/borrowings",
+            "description": "Sau khi request 5.2 trả 201 và lưu tempOverdueBorrowingId, chạy SQL cập nhật borrowed_at và due_date theo đúng ID trước khi gọi 5.3."
+          }
+        },
+        {
+          "name": "5.3 [READ-ONLY VERIFY] Confirm Temp Borrowing Recognized as Overdue",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const bId = String(pm.environment.get('tempOverdueBorrowingId') || '').trim();",
+                  "const eqId = String(pm.environment.get('tempOverdueEqId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(bId) || !/^[1-9]\\d*$/.test(eqId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempOverdueBorrowingId/tempOverdueEqId. Hãy chạy 5.1 -> 5.2 và SQL Bước 3 trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "const resBody = pm.response.json();",
+                  "const targetId = Number(pm.environment.get('tempOverdueBorrowingId'));",
+                  "pm.test('Temp borrowing appears overdue with provisional 30000', () => {",
+                  "  pm.expect(resBody.items).to.be.an('array');",
+                  "  const found = resBody.items.find(i => i.id === targetId);",
+                  "  pm.expect(found, 'Hãy chắc chắn đã chạy câu SQL Bước 3 trước khi gọi 5.3').to.be.an('object');",
+                  "  pm.expect(found.status).to.eql('overdue');",
+                  "  pm.expect(found.fineStatus).to.eql('provisional');",
+                  "  pm.expect(found.fineId).to.be.null;",
+                  "  pm.expect(found.lateDays).to.eql(3);",
+                  "  pm.expect(found.fineAmount).to.eql(30000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings?status=overdue"
+          }
+        },
+        {
+          "name": "5.4 [MUTATING] Return Overdue Borrowing & Capture tempOverdueFineId (-> 200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const existingFine = String(pm.environment.get('tempOverdueFineId') || '').trim();",
+                  "if (existingFine !== '') {",
+                  "  const reason = `Không thể chạy 5.4 vì tempOverdueFineId=${existingFine} của lượt trước vẫn còn. Hãy cleanup DB đúng ID rồi chạy lại 1.1.`;",
+                  "  pm.environment.set('runBlocked', 'true');",
+                  "  pm.environment.set('runBlockedReason', reason);",
+                  "  console.error(`[BLOCKED] ${reason}`);",
+                  "  if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+                  "    pm.execution.setNextRequest(null);",
+                  "  } else if (typeof postman !== 'undefined' && typeof postman.setNextRequest === 'function') {",
+                  "    postman.setNextRequest(null);",
+                  "  }",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${reason}`);",
+                  "    throw new Error(`${unsupported} ${reason}`);",
+                  "  }",
+                  "}",
+                  "const bId = String(pm.environment.get('tempOverdueBorrowingId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(bId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempOverdueBorrowingId. Hãy chạy 5.2 -> 5.3 trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Overdue return settled unpaid fine (30000) and stores tempOverdueFineId', () => {",
+                  "    pm.expect(resBody.borrowing).to.be.an('object');",
+                  "    pm.expect(Number(resBody.borrowing.id)).to.eql(Number(pm.environment.get('tempOverdueBorrowingId')));",
+                  "    pm.expect(resBody.borrowing.status).to.eql('returned');",
+                  "    pm.expect(resBody.borrowing.fineId).to.be.a('number').and.above(0);",
+                  "    pm.expect(resBody.borrowing.fineStatus).to.eql('unpaid');",
+                  "    pm.expect(resBody.borrowing.lateDays).to.eql(3);",
+                  "    pm.expect(resBody.borrowing.fineAmount).to.eql(30000);",
+                  "    pm.environment.set('tempOverdueFineId', String(resBody.borrowing.fineId));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": "{{baseUrl}}/borrowings/{{tempOverdueBorrowingId}}/return",
+            "description": "Không gửi fineAmount/returnedAt từ client. Lấy fineId từ response lưu vào tempOverdueFineId."
+          }
+        },
+        {
+          "name": "5.5 [MUTATING] Pay Settled Temp Fine ({{tempOverdueFineId}} -> 200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('tempOverdueFinePaid', 'false');",
+                  "const fId = String(pm.environment.get('tempOverdueFineId') || '').trim();",
+                  "if (!/^[1-9]\\d*$/.test(fId)) {",
+                  "  const msg = '[SKIP] Thiếu hoặc sai định dạng tempOverdueFineId. Hãy chạy 5.4 (trả phiếu quá hạn) thành công trước.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('tempOverdueFinePaid', 'false');",
+                  "pm.test('HTTP 200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 200) {",
+                  "  const resBody = pm.response.json();",
+                  "  pm.test('Fine marked paid with server todayIso and sets tempOverdueFinePaid=true', () => {",
+                  "    pm.expect(resBody).to.be.an('object');",
+                  "    pm.expect(resBody.fine).to.be.an('object');",
+                  "    pm.expect(Number(resBody.fine.fineId)).to.eql(Number(pm.environment.get('tempOverdueFineId')));",
+                  "    pm.expect(resBody.fine.fineStatus).to.eql('paid');",
+                  "    pm.expect(resBody.fine.paidAt).to.eql(pm.environment.get('todayIso'));",
+                  "    pm.expect(resBody.fine.fineAmount).to.eql(30000);",
+                  "    pm.environment.set('tempOverdueFinePaid', 'true');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/fines/{{tempOverdueFineId}}/pay",
+            "description": "Chỉ bật tempOverdueFinePaid='true' khi HTTP 200 và body xác nhận fineStatus === 'paid' đúng ID/ngày."
+          }
+        },
+        {
+          "name": "5.6 [MUTATING ERROR] Double Pay Same Temp Fine (-> 409)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const fId = String(pm.environment.get('tempOverdueFineId') || '').trim();",
+                  "const isPaid = String(pm.environment.get('tempOverdueFinePaid') || '').trim() === 'true';",
+                  "if (!/^[1-9]\\d*$/.test(fId) || !isPaid) {",
+                  "  const msg = '[SKIP] Request 5.5 (thu tiền phạt lần đầu) chưa xác nhận thành công (tempOverdueFinePaid !== true) hoặc thiếu tempOverdueFineId. Bỏ qua 5.6.';",
+                  "  console.warn(msg);",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+                  "    pm.execution.skipRequest();",
+                  "  } else {",
+                  "    const unsupported = '[UNSUPPORTED POSTMAN < 10.22] Thiếu pm.execution.skipRequest(). Hãy dùng Postman Desktop >= v10.22; throw Error không bảo đảm chặn HTTP tương đương skipRequest().';",
+                  "    console.error(`${unsupported} | ${msg}`);",
+                  "    throw new Error(`${unsupported} ${msg}`);",
+                  "  }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 409 Conflict', () => pm.response.to.have.status(409));",
+                  "const resBody = pm.response.json();",
+                  "pm.test('Error code FINE_ALREADY_PAID', () => {",
+                  "  pm.expect(resBody.error.code).to.eql('FINE_ALREADY_PAID');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/fines/{{tempOverdueFineId}}/pay"
+          }
+        }
+      ]
+    }
+  ]
+}
